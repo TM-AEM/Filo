@@ -1,0 +1,6 @@
+{
+  "name": "Filo",
+  "description": "Filo — Fast File Transfer: High-speed, secure, and lightweight peer-to-peer file sharing for Android.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
