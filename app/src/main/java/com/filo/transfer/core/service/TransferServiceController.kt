@@ -20,7 +20,7 @@ object TransferServiceController {
         get() = TransferService.serviceState
 
     /**
-     * Starts a background file sending session.
+     * Starts a background file sending session using file paths or content URIs.
      */
     fun startSend(
         context: Context,
@@ -39,6 +39,27 @@ object TransferServiceController {
         )
         val intent = TransferCommand.toIntent(context, command)
         ContextCompat.startForegroundService(context, intent)
+    }
+
+    /**
+     * Starts a background file sending session directly from a list of SAF/MediaStore [android.net.Uri]s.
+     */
+    fun startSendUris(
+        context: Context,
+        transferId: String,
+        targetHost: String,
+        targetPort: Int = ProtocolConstants.DEFAULT_PORT,
+        uris: List<android.net.Uri>,
+        deviceName: String = "FiloSender"
+    ) {
+        startSend(
+            context = context,
+            transferId = transferId,
+            targetHost = targetHost,
+            targetPort = targetPort,
+            filePaths = uris.map { it.toString() },
+            deviceName = deviceName
+        )
     }
 
     /**

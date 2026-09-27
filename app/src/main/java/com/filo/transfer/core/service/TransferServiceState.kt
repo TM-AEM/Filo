@@ -18,7 +18,8 @@ sealed interface TransferServiceState {
     /** A transfer has been requested and initialization/connection is underway. */
     data class Initializing(
         val transferId: String,
-        val isSender: Boolean
+        val isSender: Boolean,
+        val boundPort: Int? = null
     ) : TransferServiceState
 
     /**

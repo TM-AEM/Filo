@@ -94,6 +94,22 @@ sealed interface TransferCommand {
                     intent.putExtra(EXTRA_PORT, command.targetPort)
                     intent.putStringArrayListExtra(EXTRA_FILE_PATHS, ArrayList(command.filePaths))
                     intent.putExtra(EXTRA_DEVICE_NAME, command.deviceName)
+
+                    val contentUris = command.filePaths.mapNotNull {
+                        if (it.startsWith("content://")) android.net.Uri.parse(it) else null
+                    }
+                    if (contentUris.isNotEmpty()) {
+                        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        val clipData = android.content.ClipData.newUri(
+                            context.contentResolver,
+                            "transfer_files",
+                            contentUris.first()
+                        )
+                        for (i in 1 until contentUris.size) {
+                            clipData.addItem(android.content.ClipData.Item(contentUris[i]))
+                        }
+                        intent.clipData = clipData
+                    }
                 }
                 is StartReceive -> {
                     intent.action = ACTION_START_RECEIVE

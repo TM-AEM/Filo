@@ -3,13 +3,17 @@ package com.filo.transfer.core.service
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.ServiceCompat
+import com.filo.transfer.core.network.discovery.DiscoveryService
+import com.filo.transfer.core.network.discovery.NsdDiscoveryService
 import com.filo.transfer.core.network.model.ManifestFileItem
 import com.filo.transfer.core.network.model.NetworkError
 import com.filo.transfer.core.network.model.TransferManifest
 import com.filo.transfer.core.network.model.TransferState
+import com.filo.transfer.core.network.transfer.ContentUriFileSource
 import com.filo.transfer.core.network.transfer.LocalFileSource
 import com.filo.transfer.core.network.transfer.TransferFileSource
 import com.filo.transfer.core.network.transfer.TransferReceiver
@@ -17,6 +21,9 @@ import com.filo.transfer.core.network.transfer.TransferSender
 import com.filo.transfer.core.network.transport.SocketConnection
 import com.filo.transfer.core.network.transport.TcpClientTransport
 import com.filo.transfer.core.network.transport.TcpServerTransport
+import com.filo.transfer.core.storage.model.StorageResult
+import com.filo.transfer.core.storage.provider.FileMetadataResolver
+import com.filo.transfer.core.storage.provider.FileStreamProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -122,24 +129,58 @@ class TransferService : Service() {
                 connection = TcpClientTransport.connect(command.targetHost, command.targetPort)
                 currentConnection = connection
 
-                val files = command.filePaths.map { path -> File(path) }.filter { it.exists() && it.isFile }
-                val manifestItems = files.mapIndexed { idx, file ->
-                    ManifestFileItem(
-                        fileId = "file-$idx",
-                        fileName = file.name,
-                        size = file.length(),
-                        mimeType = "application/octet-stream",
-                        lastModified = file.lastModified()
-                    )
+                val resolver = FileMetadataResolver(contentResolver)
+                val streamProvider = FileStreamProvider(contentResolver)
+
+                val manifestItems = mutableListOf<ManifestFileItem>()
+                val sources = mutableMapOf<String, TransferFileSource>()
+
+                command.filePaths.forEachIndexed { idx, pathOrUri ->
+                    val fileId = "file-$idx"
+                    if (pathOrUri.startsWith("content://") || pathOrUri.startsWith("file://")) {
+                        val uri = Uri.parse(pathOrUri)
+                        val metaResult = resolver.resolve(uri)
+                        if (metaResult is StorageResult.Success) {
+                            val fileMeta = metaResult.data
+                            val item = ManifestFileItem(
+                                fileId = fileId,
+                                fileName = fileMeta.displayName,
+                                size = if (fileMeta.size >= 0L) fileMeta.size else 0L,
+                                mimeType = fileMeta.mimeType,
+                                lastModified = fileMeta.lastModified
+                            )
+                            manifestItems.add(item)
+                            sources[fileId] = ContentUriFileSource(
+                                uri = uri,
+                                fileId = fileId,
+                                fileName = item.fileName,
+                                size = item.size,
+                                mimeType = item.mimeType,
+                                lastModified = item.lastModified,
+                                streamProvider = streamProvider
+                            )
+                        }
+                    } else {
+                        val file = File(pathOrUri)
+                        if (file.exists() && file.isFile) {
+                            val item = ManifestFileItem(
+                                fileId = fileId,
+                                fileName = file.name,
+                                size = file.length(),
+                                mimeType = "application/octet-stream",
+                                lastModified = file.lastModified()
+                            )
+                            manifestItems.add(item)
+                            sources[fileId] = LocalFileSource(file, fileId)
+                        }
+                    }
                 }
+
                 val manifest = TransferManifest(
                     transferId = command.transferId,
                     senderDeviceName = command.deviceName,
                     files = manifestItems
                 )
-                val sources = manifestItems.mapIndexed { idx, item ->
-                    item.fileId to LocalFileSource(files[idx], item.fileId)
-                }.toMap()
 
                 val result = sender.transfer(connection, manifest, sources)
                 handleFinalResult(command.transferId, isSender = true, result = result, state = sender.state.value)
@@ -186,15 +227,31 @@ class TransferService : Service() {
 
             var server: TcpServerTransport? = null
             var connection: SocketConnection? = null
+            var discoveryService: DiscoveryService? = null
             try {
                 server = TcpServerTransport()
                 currentServerTransport = server
-                server.bind(command.listenPort)
+                val actualBoundPort = server.bind(command.listenPort)
+                _serviceState.value = TransferServiceState.Initializing(
+                    transferId = command.transferId,
+                    isSender = false,
+                    boundPort = actualBoundPort
+                )
+
+                try {
+                    discoveryService = NsdDiscoveryService.create(applicationContext)
+                    discoveryService.startAdvertising(actualBoundPort, command.deviceName)
+                } catch (_: Throwable) {}
 
                 connection = server.accept()
                 currentConnection = connection
 
+                try { discoveryService?.stopAdvertising() } catch (_: Throwable) {}
+
                 val destinationDir = File(command.destinationDir)
+                if (!destinationDir.exists()) {
+                    destinationDir.mkdirs()
+                }
                 val result = receiver.receive(connection, destinationDir, allowResume = true)
                 handleFinalResult(command.transferId, isSender = false, result = result, state = receiver.state.value)
             } catch (e: CancellationException) {
@@ -203,6 +260,7 @@ class TransferService : Service() {
                 val netError = if (e is NetworkError) e else NetworkError.IoError(e.message ?: "Receive failed", e)
                 handleFailed(command.transferId, isSender = false, netError)
             } finally {
+                try { discoveryService?.stopAdvertising() } catch (_: Throwable) {}
                 stateJob.cancel()
                 try { connection?.close() } catch (_: Throwable) {}
                 try { server?.close() } catch (_: Throwable) {}

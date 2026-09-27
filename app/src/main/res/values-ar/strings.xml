@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">فيلو</string>
+    <string name="app_tagline">نقل سريع للملفات</string>
+    <string name="send">إرسال</string>
+    <string name="receive">استلام</string>
+    <string name="send_description">إرسال المستندات والوسائط والملفات إلى الأجهزة المجاورة</string>
+    <string name="receive_description">استلام الملفات من أي جهاز على شبكة الواي فاي</string>
+    <string name="select_files">اختيار ملفات</string>
+    <string name="add_more_files">إضافة المزيد</string>
+    <string name="clear_all">مسح الكل</string>
+    <string name="no_files_selected">لم يتم اختيار أي ملفات</string>
+    <string name="no_files_selected_hint">اضغط على \"اختيار ملفات\" لتحديد المستندات أو الصور أو مقاطع الفيديو للنقل.</string>
+    <string name="selected_files_summary">%1$d ملفات (%2$s)</string>
+    <string name="single_file_summary">ملف واحد (%1$s)</string>
+    <string name="btn_continue">متابعة</string>
+    <string name="discovering_devices">جارٍ البحث عن الأجهزة المجاورة…</string>
+    <string name="searching_nearby">تأكد من فتح تطبيق فيلو في وضع الاستلام على نفس شبكة الواي فاي.</string>
+    <string name="no_devices_found">لم يتم العثور على أجهزة مجاورة حتى الآن</string>
+    <string name="ready_to_receive">جاهز للاستلام</string>
+    <string name="device_ready">متاح لنقل الملفات</string>
+    <string name="waiting_for_sender">في انتظار جهاز الإرسال…</string>
+    <string name="receive_instructions">ابقِ هذه الشاشة مفتوحة. سيظهر اسم جهازك للأجهزة المجاورة أدناه.</string>
+    <string name="device_name_label">اسم جهازك</string>
+    <string name="transferring">جارٍ النقل</string>
+    <string name="transfer_progress">تقدم النقل</string>
+    <string name="paused">مؤقت</string>
+    <string name="completed">اكتمل النقل بنجاح</string>
+    <string name="failed">فشل النقل</string>
+    <string name="cancelled">تم إلغاء النقل</string>
+    <string name="verifying">جارٍ التحقق من سلامة الملفات (SHA-256)…</string>
+    <string name="connecting">جارٍ الاتصال بالجهاز الآخر…</string>
+    <string name="speed_format">%1$s/ث</string>
+    <string name="eta_format">الوقت المتبقي: %1$s</string>
+    <string name="file_index_format">ملف %1$d من %2$d</string>
+    <string name="pause">إيقاف مؤقت</string>
+    <string name="resume">استئناف</string>
+    <string name="cancel">إلغاء</string>
+    <string name="done">تم</string>
+    <string name="cancel_transfer_confirm_title">إلغاء النقل؟</string>
+    <string name="cancel_transfer_confirm_message">هل أنت متأكد من رغبتك في إلغاء عملية النقل الحالية؟</string>
+    <string name="yes_cancel">نعم، إلغاء</string>
+    <string name="keep_transferring">متابعة النقل</string>
+    <string name="active_transfer_banner">هناك عملية نقل جارية… اضغط للعرض.</string>
+    <string name="back">رجوع</string>
+    <string name="remove_file">حذف الملف</string>
+</resources>
