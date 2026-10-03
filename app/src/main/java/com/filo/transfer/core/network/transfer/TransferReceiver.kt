@@ -176,6 +176,10 @@ class TransferReceiver(
             val netError = if (e is NetworkError) e else NetworkError.IoError(e.message ?: "Receive error", e)
             transitionTo(TransferState.Failed(netError))
             try {
+                activePartialFile?.delete()
+            } catch (_: Throwable) {}
+            activePartialFile = null
+            try {
                 connection.sendFrame(
                     ProtocolFrame(
                         type = FrameType.ERROR,
@@ -375,6 +379,7 @@ class TransferReceiver(
         if (!matched) {
             // Delete corrupt partial file
             partialFile.delete()
+            activePartialFile = null
             throw NetworkError.ChecksumMismatch(
                 expected = checksumPayload.sha256Hex,
                 actual = computedSha256

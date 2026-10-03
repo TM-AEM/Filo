@@ -148,18 +148,11 @@ class TransferReceiverEarlyEofTest {
         val finalFile = File(destDir, fullFile.name)
         assertFalse("Final file must NOT be created when transfer is rejected", finalFile.exists())
 
-        // 4. Document current production behavior: partial file is orphaned after
-        //    InvalidFrame/CHECKSUM-rejection error path (no cleanup in this branch).
+        // 4. Post Task 13: partial file is cleaned up on generic failure.
         val partialFile = File(destDir, "${fullFile.name}${ProtocolConstants.PARTIAL_FILE_SUFFIX}")
-        assertTrue(
-            "CURRENT BEHAVIOR (Task 09 documented gap): partial .filo.part file is orphaned " +
-            "and NOT auto-cleaned on frame-rejection error. Asserting existence to lock down behavior.",
+        assertFalse(
+            "Post Task 13: partial .filo.part file is cleaned up on frame-rejection error.",
             partialFile.exists()
-        )
-        assertEquals(
-            "Partial file must contain exactly the bytes that were received (not the declared size)",
-            actualReadSize.toLong(),
-            partialFile.length()
         )
     }
 
