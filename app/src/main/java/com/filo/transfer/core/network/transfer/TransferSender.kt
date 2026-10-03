@@ -344,6 +344,12 @@ class TransferSender(
             }
         }
 
+        if (currentOffset < fileItem.size) {
+            throw NetworkError.IoError(
+                "Source stream ended prematurely: $currentOffset bytes sent vs declared ${fileItem.size} bytes"
+            )
+        }
+
         // Checksum verification
         transitionTo(TransferState.Verifying(fileItem.fileName, fileIndex, totalFiles))
         val sha256 = if (requestedOffset > 0) {

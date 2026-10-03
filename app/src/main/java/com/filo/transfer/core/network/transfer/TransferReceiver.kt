@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
@@ -35,13 +36,41 @@ class TransferReceiver(
     val state: StateFlow<TransferState> = _state.asStateFlow()
 
     private val isCancelled = AtomicBoolean(false)
+    private val isPaused = AtomicBoolean(false)
+    private val pauseMutex = Mutex()
     private var activeConnection: SocketConnection? = null
+    private var activePartialFile: File? = null
+
+    suspend fun pause() {
+        if (!isPaused.getAndSet(true)) {
+            pauseMutex.lock()
+            val current = _state.value
+            if (current is TransferState.Transferring) {
+                transitionTo(TransferState.Paused(current.progress))
+            }
+        }
+    }
+
+    fun resume() {
+        if (isPaused.getAndSet(false)) {
+            if (pauseMutex.isLocked) {
+                pauseMutex.unlock()
+            }
+        }
+    }
 
     /**
      * Cancels the active receive operation, immediately closing sockets and cleaning up.
      */
     fun cancel() {
         if (!isCancelled.getAndSet(true)) {
+            if (pauseMutex.isLocked) {
+                pauseMutex.unlock()
+            }
+            try {
+                activePartialFile?.delete()
+            } catch (_: Throwable) {}
+            activePartialFile = null
             try {
                 activeConnection?.let { conn ->
                     try {
@@ -74,6 +103,8 @@ class TransferReceiver(
     ): Result<TransferManifest> = withContext(Dispatchers.IO) {
         activeConnection = connection
         isCancelled.set(false)
+        isPaused.set(false)
+        activePartialFile = null
 
         if (!destinationDir.exists()) {
             destinationDir.mkdirs()
@@ -136,6 +167,12 @@ class TransferReceiver(
             cancel()
             Result.failure(e)
         } catch (e: Throwable) {
+            if (isCancelled.get()) {
+                cancel()
+                return@withContext Result.failure(
+                    NetworkError.TransferCancelled("Receive operation cancelled", e)
+                )
+            }
             val netError = if (e is NetworkError) e else NetworkError.IoError(e.message ?: "Receive error", e)
             transitionTo(TransferState.Failed(netError))
             try {
@@ -215,7 +252,7 @@ class TransferReceiver(
         return manifest
     }
 
-    private fun receiveSingleFile(
+    private suspend fun receiveSingleFile(
         connection: SocketConnection,
         fileItem: ManifestFileItem,
         fileIndex: Int,
@@ -233,9 +270,7 @@ class TransferReceiver(
 
         val safeName = FilenameValidator.sanitize(header.fileName)
         val partialFile = File(destinationDir, "$safeName${ProtocolConstants.PARTIAL_FILE_SUFFIX}")
-        val finalFile = File(destinationDir, safeName)
 
-        // 2. Partial file & resume negotiation
         var resumeOffset = 0L
         if (allowResume && partialFile.exists()) {
             val existingLen = partialFile.length()
@@ -246,6 +281,10 @@ class TransferReceiver(
                 resumeOffset = 0L
             }
         }
+
+        val isResume = resumeOffset > 0
+        val resolvedName = resolveCollisionSafeFilename(destinationDir, safeName, isResume)
+        val finalFile = File(destinationDir, resolvedName)
 
         val resumeReqPayload = FramePayloads.encodeResumeRequest(header.fileId, resumeOffset)
         connection.sendFrame(
@@ -286,7 +325,9 @@ class TransferReceiver(
         val appendMode = resumeOffset > 0
 
         FileOutputStream(partialFile, appendMode).use { fileOut ->
+            activePartialFile = partialFile
             while (currentBytes < header.fileSize) {
+                checkPaused()
                 checkCancelled()
 
                 val chunkFrame = connection.receiveFrame()
@@ -340,15 +381,40 @@ class TransferReceiver(
             )
         }
 
-        // 6. Safe Atomic Completion: Rename .filo.part -> final safe filename
-        if (finalFile.exists()) {
-            finalFile.delete()
-        }
         val renamed = partialFile.renameTo(finalFile)
         if (!renamed) {
-            // Fallback for cross-mount points: copy then delete partial
-            partialFile.copyTo(finalFile, overwrite = true)
+            partialFile.copyTo(finalFile, overwrite = false)
             partialFile.delete()
+        }
+        activePartialFile = null
+    }
+
+    private fun resolveCollisionSafeFilename(dir: File, requestedName: String, isResume: Boolean): String {
+        if (isResume) return requestedName
+        var candidate = requestedName
+        var counter = 1
+        while (File(dir, candidate).exists()) {
+            val dotIndex = requestedName.lastIndexOf('.')
+            if (dotIndex > 0) {
+                val base = requestedName.substring(0, dotIndex)
+                val ext = requestedName.substring(dotIndex)
+                candidate = "${base}_${counter}${ext}"
+            } else {
+                candidate = "${requestedName}_${counter}"
+            }
+            counter++
+        }
+        return candidate
+    }
+
+    private suspend fun checkPaused() {
+        if (isPaused.get()) {
+            pauseMutex.lock()
+            pauseMutex.unlock()
+            val current = _state.value
+            if (current is TransferState.Paused) {
+                transitionTo(TransferState.Transferring(current.progress))
+            }
         }
     }
 

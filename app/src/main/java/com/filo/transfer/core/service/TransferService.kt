@@ -273,6 +273,13 @@ class TransferService : Service() {
     }
 
     private fun handlePause() {
+        val receiver = currentReceiver
+        if (receiver != null) {
+            serviceScope.launch {
+                receiver.pause()
+            }
+            return
+        }
         val sender = currentSender ?: return
         serviceScope.launch {
             sender.pause()
@@ -280,6 +287,11 @@ class TransferService : Service() {
     }
 
     private fun handleResume() {
+        val receiver = currentReceiver
+        if (receiver != null) {
+            receiver.resume()
+            return
+        }
         currentSender?.resume()
     }
 
