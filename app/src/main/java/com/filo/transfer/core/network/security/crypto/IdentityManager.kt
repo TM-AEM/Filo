@@ -61,11 +61,15 @@ object IdentityManager {
             val ks = KeyStore.getInstance("AndroidKeyStore")
             ks.load(null)
             if (ks.containsAlias(KEY_NAME)) {
-                return generateKeyPair()
+                // Return the EXISTING identity — do NOT generate a new key
+                val privateKey = ks.getKey(KEY_NAME, null) as PrivateKey
+                val cert = ks.getCertificate(KEY_NAME)
+                return KeyPair(cert.publicKey, privateKey)
             }
         } catch (e: Exception) {
             e.printStackTrace()
         }
+        // Key does not exist yet — generate and store exactly one new identity
         return generateKeyPair()
     }
 

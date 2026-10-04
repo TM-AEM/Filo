@@ -1,323 +1,345 @@
 package com.filo.transfer.core.network.security.handshake
 
+import com.filo.transfer.core.network.security.crypto.Hkdf
 import com.filo.transfer.core.network.security.crypto.SecureRandomWrapper
-import org.junit.Test
 import org.junit.Assert.*
+import org.junit.Test
+import java.security.MessageDigest
 
 /**
- * 20 focused security tests for the handshake layer.
+ * 25 focused handshake security tests.
  */
 class HandshakeSecurityTest {
 
-    // ── Transcript encoding ──────────────────────────────────────────────
+    private fun sha256Hex(data: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(data).joinToString("") { "%02x".format(it) }
+
+    // ── Identity (tests 1-5) ────────────────────────────────────────────
 
     @Test
-    fun `transcript encode is deterministic`() {
-        val nonce = SecureRandomWrapper.nextNonce()
-        val t = HandshakeTranscript(
-            protocolVersion = 1,
-            role = 0,
-            idAlgorithm = "SHA256withECDSA",
-            idPublicKey = SecureRandomWrapper.nextBytes(49),
-            ephPublicKey = SecureRandomWrapper.nextBytes(65),
-            nonce = nonce,
-            keyAgreementAlg = "P-256"
-        )
-        val enc1 = t.encode()
-        val enc2 = t.encode()
-        assertArrayEquals("Identical transcripts must produce identical bytes", enc1, enc2)
-    }
-
-    @Test
-    fun `transcript hash changes when any field changes`() {
-        val nonce = SecureRandomWrapper.nextNonce()
-        val base = HandshakeTranscript(
-            protocolVersion = 1, role = 0,
-            idAlgorithm = "SHA256withECDSA",
-            idPublicKey = SecureRandomWrapper.nextBytes(49),
-            ephPublicKey = SecureRandomWrapper.nextBytes(65),
-            nonce = nonce, keyAgreementAlg = "P-256"
-        )
-        val baseHash = base.hash()
-
-        val differentNonce = base.copy(nonce = SecureRandomWrapper.nextNonce())
-        assertNotEquals(
-            "Different nonces must produce different hashes",
-            baseHash, differentNonce.hash()
-        )
-
-        val differentPub = base.copy(idPublicKey = SecureRandomWrapper.nextBytes(49))
-        assertNotEquals(
-            "Different identity public keys must produce different hashes",
-            baseHash, differentPub.hash()
+    fun `1 persistent identity remains stable across repeated retrieval`() {
+        val identity = InMemorySigningIdentity.generate()
+        val state1 = SecureHandshake.initiate(identity)
+        val state2 = SecureHandshake.initiate(identity)
+        assertArrayEquals(
+            "Same identity must produce the same public key",
+            state1.localMessage.idPublicKey,
+            state2.localMessage.idPublicKey
         )
     }
 
     @Test
-    fun `transcript nonce must be exactly 32 bytes`() {
-        val t = HandshakeTranscript(
-            protocolVersion = 1, role = 0,
-            idAlgorithm = "SHA256withECDSA",
-            idPublicKey = byteArrayOf(0),
-            ephPublicKey = byteArrayOf(0),
-            nonce = ByteArray(31), // wrong size
-            keyAgreementAlg = "P-256"
+    fun `2 identity fingerprint remains stable`() {
+        val identity = InMemorySigningIdentity.generate()
+        val spki = identity.getIdentityPublicKey()
+        val fp1 = sha256Hex(spki)
+        val fp2 = sha256Hex(spki)
+        assertEquals("Fingerprint must be stable", fp1, fp2)
+        assertEquals(64, fp1.length)
+        assertTrue("Fingerprint must be lowercase hex", fp1.all { it in '0'..'9' || it in 'a'..'f' })
+    }
+
+    @Test
+    fun `3 valid identity signature verifies`() {
+        val identity = InMemorySigningIdentity.generate()
+        val data = "test-transcript".toByteArray()
+        val sig = identity.signTranscript(data)
+        assertTrue(
+            "Valid signature must verify",
+            IdentityVerifier.verify(identity.getIdentityPublicKey(), "SHA256withECDSA", data, sig)
         )
-        assertThrows(IllegalArgumentException::class.java) {
-            t.encode()
-        }
     }
 
     @Test
-    fun `transcript hash is 32 bytes`() {
-        val t = HandshakeTranscript(
-            protocolVersion = 1, role = 0,
-            idAlgorithm = "SHA256withECDSA",
-            idPublicKey = SecureRandomWrapper.nextBytes(49),
-            ephPublicKey = SecureRandomWrapper.nextBytes(65),
-            nonce = SecureRandomWrapper.nextNonce(),
-            keyAgreementAlg = "P-256"
+    fun `4 modified signed data fails verification`() {
+        val identity = InMemorySigningIdentity.generate()
+        val data = "original-data".toByteArray()
+        val sig = identity.signTranscript(data)
+        val tampered = "tampered-data".toByteArray()
+        assertFalse(
+            "Modified data must fail signature verification",
+            IdentityVerifier.verify(identity.getIdentityPublicKey(), "SHA256withECDSA", tampered, sig)
         )
-        assertEquals(32, t.hash().size)
-    }
-
-    // ── Ephemeral key pair ─────────────────────────────────────────────
-
-    @Test
-    fun `ephemeral key generation produces valid P-256 public key`() {
-        val kp = EphemeralKeyPair.generateP256()
-        assertTrue("P-256 public key SPKI must be at least 44 bytes", kp.publicKeySpki.size >= 44)
-        // P-256 public key in SPKI is 0x30 0x42 (68 bytes for uncompressed point + header)
-        assertTrue("P-256 SPKI must start with 0x30", kp.publicKeySpki[0].toInt() and 0xFF == 0x30)
     }
 
     @Test
-    fun `ephemeral keys are non-reusable after destroy`() {
-        val kp = EphemeralKeyPair.generateP256()
-        kp.destroy()
-        assertThrows(HandshakeError::class.java) {
-            kp.checkNotDestroyed()
-        }
+    fun `5 wrong identity public key fails verification`() {
+        val identityA = InMemorySigningIdentity.generate()
+        val identityB = InMemorySigningIdentity.generate()
+        val data = "shared-data".toByteArray()
+        val sig = identityA.signTranscript(data)
+        assertFalse(
+            "Wrong public key must fail signature verification",
+            IdentityVerifier.verify(identityB.getIdentityPublicKey(), "SHA256withECDSA", data, sig)
+        )
     }
 
+    // ── Key agreement (tests 6-8) ──────────────────────────────────────
+
     @Test
-    fun `ECDH shared secret is symmetric`() {
+    fun `6 two P-256 ephemeral peers derive same shared secret`() {
         val a = EphemeralKeyPair.generateP256()
         val b = EphemeralKeyPair.generateP256()
-
         val secretAB = EphemeralKeyPair.sharedSecret(a.privateKey, b.publicKeySpki)
         val secretBA = EphemeralKeyPair.sharedSecret(b.privateKey, a.publicKeySpki)
-
-        assertArrayEquals(
-            "ECDH must produce the same shared secret regardless of order",
-            secretAB, secretBA
-        )
+        assertArrayEquals("ECDH must be symmetric", secretAB, secretBA)
     }
 
     @Test
-    fun `ECDH shared secret is not zero`() {
-        val a = EphemeralKeyPair.generateP256()
-        val b = EphemeralKeyPair.generateP256()
-        val secret = EphemeralKeyPair.sharedSecret(a.privateKey, b.publicKeySpki)
-        assertTrue("Shared secret must not be all zeros", secret.any { it != 0.toByte() })
-    }
-
-    @Test
-    fun `ECDH rejects unknown algorithm`() {
-        val a = EphemeralKeyPair.generateP256()
-        assertThrows(IllegalArgumentException::class.java) {
-            EphemeralKeyPair.sharedSecret(a.privateKey, a.publicKeySpki, "X25519")
-        }
-    }
-
-    // ── Handshake message verification ─────────────────────────────────
-
-    @Test
-    fun `valid handshake message passes signature verification`() {
-        val identity = InMemorySigningIdentity.generate()
-        val msg = SecureHandshake.initiate(identity)
-        assertTrue("Valid signature must verify", msg.verifySignature())
-    }
-
-    @Test
-    fun `tampered nonce fails signature verification`() {
-        val identity = InMemorySigningIdentity.generate()
-        val msg = SecureHandshake.initiate(identity)
-        val tamperedNonce = SecureRandomWrapper.nextNonce()
-        val tampered = msg.copy(nonce = tamperedNonce)
-        assertFalse("Tampered nonce must fail signature verification", tampered.verifySignature())
-    }
-
-    @Test
-    fun `tampered identity key fails signature verification`() {
-        val identity = InMemorySigningIdentity.generate()
-        val other = InMemorySigningIdentity.generate()
-        val msg = SecureHandshake.initiate(identity)
-        val swapped = msg.copy(idPublicKey = other.getIdentityPublicKey())
-        assertFalse("Swapped identity key must fail signature verification", swapped.verifySignature())
-    }
-
-    @Test
-    fun `tampered key agreement algorithm fails signature verification`() {
-        val identity = InMemorySigningIdentity.generate()
-        val msg = SecureHandshake.initiate(identity)
-        val tampered = msg.copy(keyAgreementAlg = "Ed25519")
-        assertFalse("Changed keyAgreementAlg must fail signature verification", tampered.verifySignature())
-    }
-
-    // ── Full handshake protocol ────────────────────────────────────────
-
-    @Test
-    fun `full handshake produces valid session for both peers`() {
-        val initiator = InMemorySigningIdentity.generate()
-        val responder = InMemorySigningIdentity.generate()
-
-        val localMsg = SecureHandshake.initiate(initiator)
-        val localEph = SecureHandshake.generateEphemeral()
-        // Simulate: we need the eph key that was used to build localMsg
-        // For test purposes, regenerate and rebuild
-        val eph1 = EphemeralKeyPair.generateP256()
-        val nonce1 = SecureRandomWrapper.nextNonce()
-        val transcript1 = HandshakeTranscript(
-            protocolVersion = SecureHandshake.PROTOCOL_VERSION,
-            role = 0,
-            idAlgorithm = initiator.getIdentityAlgorithm(),
-            idPublicKey = initiator.getIdentityPublicKey(),
-            ephPublicKey = eph1.publicKeySpki,
-            nonce = nonce1,
-            keyAgreementAlg = "P-256"
-        )
-        val sig1 = initiator.signTranscript(transcript1.encode())
-        val msg1 = HandshakeMessage(
-            protocolVersion = 0, role = 0,
-            idAlgorithm = initiator.getIdentityAlgorithm(),
-            idPublicKey = initiator.getIdentityPublicKey(),
-            ephPublicKey = eph1.publicKeySpki,
-            nonce = nonce1, keyAgreementAlg = "P-256",
-            signature = sig1
-        )
-
-        val eph2 = EphemeralKeyPair.generateP256()
-        val nonce2 = SecureRandomWrapper.nextNonce()
-        val transcript2 = HandshakeTranscript(
-            protocolVersion = 0, role = 1,
-            idAlgorithm = responder.getIdentityAlgorithm(),
-            idPublicKey = responder.getIdentityPublicKey(),
-            ephPublicKey = eph2.publicKeySpki,
-            nonce = nonce2, keyAgreementAlg = "P-256"
-        )
-        val sig2 = responder.signTranscript(transcript2.encode())
-        val msg2 = HandshakeMessage(
-            protocolVersion = 0, role = 1,
-            idAlgorithm = responder.getIdentityAlgorithm(),
-            idPublicKey = responder.getIdentityPublicKey(),
-            ephPublicKey = eph2.publicKeySpki,
-            nonce = nonce2, keyAgreementAlg = "P-256",
-            signature = sig2
-        )
-
-        // Both peers should compute the same shared secret
-        val secretA = EphemeralKeyPair.sharedSecret(eph1.privateKey, eph2.publicKeySpki)
-        val secretB = EphemeralKeyPair.sharedSecret(eph2.privateKey, eph1.publicKeySpki)
-        assertArrayEquals("Both peers must derive the same shared secret", secretA, secretB)
-
-        // Complete as initiator
-        val sessionA = SecureSession.create(msg1, msg2, secretA, eph1, eph2)
-        assertNotNull("Session must not be null", sessionA)
-        assertEquals(32, sessionA.transcriptHash.size)
-        assertEquals(32, sessionA.clientToServerKey.size)
-    }
-
-    @Test
-    fun `session keys are directional - different per direction`() {
-        val initiator = InMemorySigningIdentity.generate()
-        val responder = InMemorySigningIdentity.generate()
-
-        val eph1 = EphemeralKeyPair.generateP256()
-        val eph2 = EphemeralKeyPair.generateP256()
-        val nonce1 = SecureRandomWrapper.nextNonce()
-        val nonce2 = SecureRandomWrapper.nextNonce()
-
-        val msg1 = buildMsg(0, initiator, eph1, nonce1)
-        val msg2 = buildMsg(1, responder, eph2, nonce2)
-
-        val secret = EphemeralKeyPair.sharedSecret(eph1.privateKey, eph2.publicKeySpki)
-        val session = SecureSession.create(msg1, msg2, secret, eph1, eph2)
-
+    fun `7 different ephemeral keys produce different shared secrets`() {
+        val fixed = EphemeralKeyPair.generateP256()
+        val other1 = EphemeralKeyPair.generateP256()
+        val other2 = EphemeralKeyPair.generateP256()
+        val s1 = EphemeralKeyPair.sharedSecret(fixed.privateKey, other1.publicKeySpki)
+        val s2 = EphemeralKeyPair.sharedSecret(fixed.privateKey, other2.publicKeySpki)
         assertFalse(
-            "Client-to-server key must differ from server-to-client key",
-            session.clientToServerKey.contentEquals(session.serverToClientKey)
+            "Different ephemeral keys must produce different shared secrets",
+            s1.contentEquals(s2)
         )
     }
 
     @Test
-    fun `replaying a tampered peer message is rejected`() {
-        val identity = InMemorySigningIdentity.generate()
-        val msg = SecureHandshake.initiate(identity)
+    fun `8 API 30-safe P-256 path works`() {
+        val kp = EphemeralKeyPair.generateP256()
+        assertEquals("P-256 must be the algorithm", "P-256", kp.algorithm)
+        val spki = kp.publicKeySpki
+        assertTrue("SPKI must be at least 44 bytes", spki.size >= 44)
+        val factory = java.security.KeyFactory.getInstance("EC")
+        val pub = factory.generatePublic(java.security.spec.X509EncodedKeySpec(spki))
+        val ecPub = pub as java.security.interfaces.ECPublicKey
+        assertNotNull("P-256 point must have valid coordinates", ecPub.w)
+    }
 
-        // Tamper with the nonce - signature verification must fail
-        val tampered = msg.copy(nonce = SecureRandomWrapper.nextNonce())
-        assertFalse("Tampered nonce must fail signature verification", tampered.verifySignature())
+    // ── Transcript (tests 9-15) ───────────────────────────────────────
+
+    private fun buildFullTranscript(
+        version: Byte = 1,
+        alg: String = "SHA256withECDSA",
+        keyAgreement: String = "P-256"
+    ): FullHandshakeTranscript {
+        val init = InMemorySigningIdentity.generate()
+        val resp = InMemorySigningIdentity.generate()
+        val iEph = EphemeralKeyPair.generateP256()
+        val rEph = EphemeralKeyPair.generateP256()
+        return FullHandshakeTranscript(
+            protocolVersion = version,
+            keyAgreementAlg = keyAgreement,
+            initiator = HandshakeData(0.toByte(), alg, init.getIdentityPublicKey(), iEph.publicKeySpki, SecureRandomWrapper.nextNonce()),
+            responder = HandshakeData(1.toByte(), alg, resp.getIdentityPublicKey(), rEph.publicKeySpki, SecureRandomWrapper.nextNonce())
+        )
     }
 
     @Test
-    fun `complement role check - same role is rejected`() {
-        val a = InMemorySigningIdentity.generate()
-        val b = InMemorySigningIdentity.generate()
+    fun `9 identical canonical transcript hashes identically`() {
+        val t = buildFullTranscript()
+        val h1 = t.hash()
+        val h2 = t.hash()
+        assertArrayEquals("Same transcript must produce same hash", h1, h2)
+        assertEquals(32, h1.size)
+    }
 
-        val ephA = EphemeralKeyPair.generateP256()
-        val ephB = EphemeralKeyPair.generateP256()
-        val msgA = buildMsg(0, a, ephA, SecureRandomWrapper.nextNonce())
-        val msgB = buildMsg(0, b, ephB, SecureRandomWrapper.nextNonce()) // both role=0
+    @Test
+    fun `10 changing protocol version changes transcript`() {
+        val base = buildFullTranscript(version = 1)
+        val changed = base.copy(protocolVersion = 2)
+        assertFalse("Different version must produce different hash", base.hash().contentEquals(changed.hash()))
+    }
 
-        val secret = EphemeralKeyPair.sharedSecret(ephA.privateKey, ephB.publicKeySpki)
-        assertThrows(HandshakeError::class.java) {
-            SecureSession.create(msgA, msgB, secret, ephA, ephB)
+    @Test
+    fun `11 changing role changes transcript`() {
+        val t = buildFullTranscript()
+        val swapped = FullHandshakeTranscript(
+            protocolVersion = t.protocolVersion,
+            keyAgreementAlg = t.keyAgreementAlg,
+            initiator = t.responder.copy(role = 0),
+            responder = t.initiator.copy(role = 1)
+        )
+        assertFalse("Swapped roles must produce different hash", t.hash().contentEquals(swapped.hash()))
+    }
+
+    @Test
+    fun `12 changing identity key changes transcript`() {
+        val t = buildFullTranscript()
+        val newKey = InMemorySigningIdentity.generate().getIdentityPublicKey()
+        val changed = t.copy(initiator = t.initiator.copy(idPublicKey = newKey))
+        assertFalse("Different identity key must produce different hash", t.hash().contentEquals(changed.hash()))
+    }
+
+    @Test
+    fun `13 changing ephemeral key changes transcript`() {
+        val t = buildFullTranscript()
+        val newEph = EphemeralKeyPair.generateP256().publicKeySpki
+        val changed = t.copy(initiator = t.initiator.copy(ephPublicKey = newEph))
+        assertFalse("Different ephemeral key must produce different hash", t.hash().contentEquals(changed.hash()))
+    }
+
+    @Test
+    fun `14 changing nonce changes transcript`() {
+        val t = buildFullTranscript()
+        val changed = t.copy(initiator = t.initiator.copy(nonce = SecureRandomWrapper.nextNonce()))
+        assertFalse("Different nonce must produce different hash", t.hash().contentEquals(changed.hash()))
+    }
+
+    @Test
+    fun `15 changing key-agreement algorithm changes transcript`() {
+        val t = buildFullTranscript(keyAgreement = "P-256")
+        val changed = t.copy(keyAgreementAlg = "P-384")
+        assertFalse("Different key-agreement algorithm must produce different hash", t.hash().contentEquals(changed.hash()))
+    }
+
+    // ── Authentication (tests 16-20) ───────────────────────────────────
+
+    private fun fullHandshake()
+            : Triple<HandshakeInitiatorState, HandshakeResponderState, InitiatorCompletion> {
+        val init = InMemorySigningIdentity.generate()
+        val resp = InMemorySigningIdentity.generate()
+        val iState = SecureHandshake.initiate(init)
+        val rState = SecureHandshake.respond(resp, iState.localMessage)
+        val iCompletion = SecureHandshake.completeAsInitiator(iState, rState.localMessage, rState.fullTranscriptSignature)
+        return Triple(iState, rState, iCompletion)
+    }
+
+    @Test
+    fun `16 valid complete transcript authenticates`() {
+        val (iState, rState, iCompletion) = fullHandshake()
+        assertNotNull("Session must be created", iCompletion.session)
+        val rSession = SecureHandshake.completeAsResponder(rState, iState.localMessage, iCompletion.signatureToSend)
+        assertNotNull("Responder session must be created", rSession)
+        assertArrayEquals(
+            "Both peers must derive the same keyA",
+            iCompletion.session.keyA,
+            rSession.keyA
+        )
+    }
+
+    @Test
+    fun `17 modified peer identity fails`() {
+        val (iState, rState, _) = fullHandshake()
+        val tamperedKey = ByteArray(rState.localMessage.idPublicKey.size) { i ->
+            if (i == 0) (rState.localMessage.idPublicKey[0].toInt() xor 1).toByte()
+            else rState.localMessage.idPublicKey[i]
+        }
+        val tampered = rState.localMessage.copy(idPublicKey = tamperedKey)
+        assertThrows(
+            "Tampered identity must cause InvalidSignature",
+            HandshakeError.InvalidSignature::class.java
+        ) {
+            SecureHandshake.completeAsInitiator(iState, tampered, rState.fullTranscriptSignature)
         }
     }
 
     @Test
-    fun `session fingerprint is stable and 64 hex chars`() {
-        val a = InMemorySigningIdentity.generate()
-        val b = InMemorySigningIdentity.generate()
-        val ephA = EphemeralKeyPair.generateP256()
-        val ephB = EphemeralKeyPair.generateP256()
-        val msgA = buildMsg(0, a, ephA, SecureRandomWrapper.nextNonce())
-        val msgB = buildMsg(1, b, ephB, SecureRandomWrapper.nextNonce())
-        val secret = EphemeralKeyPair.sharedSecret(ephA.privateKey, ephB.publicKeySpki)
-        val session = SecureSession.create(msgA, msgB, secret, ephA, ephB)
-        val fp = session.sessionFingerprint()
-        assertEquals(64, fp.length)
-        assertTrue("Fingerprint must be lowercase hex", fp.all { it in '0'..'9' || it in 'a'..'f' })
+    fun `18 modified peer ephemeral key fails`() {
+        val (iState, rState, _) = fullHandshake()
+        val tamperedEph = EphemeralKeyPair.generateP256().publicKeySpki
+        val tampered = rState.localMessage.copy(ephPublicKey = tamperedEph)
+        assertThrows(
+            "Tampered ephemeral key must cause InvalidSignature",
+            HandshakeError.InvalidSignature::class.java
+        ) {
+            SecureHandshake.completeAsInitiator(iState, tampered, rState.fullTranscriptSignature)
+        }
     }
 
-    // ── Helper ───────────────────────────────────────────────────────────
+    @Test
+    fun `19 modified peer nonce fails`() {
+        val (iState, rState, _) = fullHandshake()
+        val tampered = rState.localMessage.copy(nonce = SecureRandomWrapper.nextNonce())
+        assertThrows(
+            "Tampered nonce must cause InvalidSignature",
+            HandshakeError.InvalidSignature::class.java
+        ) {
+            SecureHandshake.completeAsInitiator(iState, tampered, rState.fullTranscriptSignature)
+        }
+    }
 
-    private fun buildMsg(
-        role: Byte,
-        identity: SigningIdentity,
-        eph: EphemeralKeyPair,
-        nonce: ByteArray
-    ): HandshakeMessage {
-        val transcript = HandshakeTranscript(
-            protocolVersion = SecureHandshake.PROTOCOL_VERSION,
-            role = role,
-            idAlgorithm = identity.getIdentityAlgorithm(),
-            idPublicKey = identity.getIdentityPublicKey(),
-            ephPublicKey = eph.publicKeySpki,
-            nonce = nonce,
-            keyAgreementAlg = "P-256"
+    @Test
+    fun `20 role-swapped transcript fails`() {
+        val t = buildFullTranscript()
+        assertThrows(
+            "Constructing a transcript with role=1 in initiator position must fail",
+            IllegalArgumentException::class.java
+        ) {
+            FullHandshakeTranscript(
+                protocolVersion = t.protocolVersion,
+                keyAgreementAlg = t.keyAgreementAlg,
+                initiator = t.responder,
+                responder = t.initiator
+            )
+        }
+    }
+
+    // ── Session derivation (tests 21-25) ───────────────────────────────
+
+    @Test
+    fun `21 both sides derive matching session material`() {
+        val (iState, rState, iCompletion) = fullHandshake()
+        val rSession = SecureHandshake.completeAsResponder(rState, iState.localMessage, iCompletion.signatureToSend)
+        assertArrayEquals("keyA must match", iCompletion.session.keyA, rSession.keyA)
+        assertArrayEquals("keyB must match", iCompletion.session.keyB, rSession.keyB)
+        assertArrayEquals("bindingKey must match", iCompletion.session.bindingKey, rSession.bindingKey)
+        assertArrayEquals(
+            "Transcript hash must match",
+            iCompletion.session.transcriptHash,
+            rSession.transcriptHash
         )
-        val sig = identity.signTranscript(transcript.encode())
-        return HandshakeMessage(
-            protocolVersion = SecureHandshake.PROTOCOL_VERSION,
-            role = role,
-            idAlgorithm = identity.getIdentityAlgorithm(),
-            idPublicKey = identity.getIdentityPublicKey(),
-            ephPublicKey = eph.publicKeySpki,
-            nonce = nonce,
-            keyAgreementAlg = "P-256",
-            signature = sig
+    }
+
+    @Test
+    fun `22 different ephemeral handshake produces different session material`() {
+        val (_, _, iComp1) = fullHandshake()
+        val (_, _, iComp2) = fullHandshake()
+        assertFalse(
+            "Different handshakes must produce different keyA",
+            iComp1.session.keyA.contentEquals(iComp2.session.keyA)
+        )
+        assertFalse(
+            "Different handshakes must produce different keyB",
+            iComp1.session.keyB.contentEquals(iComp2.session.keyB)
+        )
+    }
+
+    @Test
+    fun `23 different transcript produces different session material`() {
+        val secret = SecureRandomWrapper.nextBytes(32)
+        val h1 = SecureRandomWrapper.nextBytes(32)
+        val h2 = SecureRandomWrapper.nextBytes(32)
+        val m1 = Hkdf.deriveSessionMaterial(secret, h1)
+        val m2 = Hkdf.deriveSessionMaterial(secret, h2)
+        assertFalse(
+            "Different transcripts must produce different session material",
+            m1.contentEquals(m2)
+        )
+    }
+
+    @Test
+    fun `24 initiator peer fingerprint is responder`() {
+        val init = InMemorySigningIdentity.generate()
+        val resp = InMemorySigningIdentity.generate()
+        val iState = SecureHandshake.initiate(init)
+        val rState = SecureHandshake.respond(resp, iState.localMessage)
+        val iComp = SecureHandshake.completeAsInitiator(iState, rState.localMessage, rState.fullTranscriptSignature)
+        val expectedRespFp = sha256Hex(resp.getIdentityPublicKey())
+        assertEquals(
+            "Initiator's peer fingerprint must be the responder's identity",
+            expectedRespFp,
+            iComp.session.peerFingerprint
+        )
+    }
+
+    @Test
+    fun `25 responder peer fingerprint is initiator`() {
+        val init = InMemorySigningIdentity.generate()
+        val resp = InMemorySigningIdentity.generate()
+        val iState = SecureHandshake.initiate(init)
+        val rState = SecureHandshake.respond(resp, iState.localMessage)
+        val iComp = SecureHandshake.completeAsInitiator(iState, rState.localMessage, rState.fullTranscriptSignature)
+        val rSession = SecureHandshake.completeAsResponder(rState, iState.localMessage, iComp.signatureToSend)
+        val expectedInitFp = sha256Hex(init.getIdentityPublicKey())
+        assertEquals(
+            "Responder's peer fingerprint must be the initiator's identity",
+            expectedInitFp,
+            rSession.peerFingerprint
         )
     }
 }

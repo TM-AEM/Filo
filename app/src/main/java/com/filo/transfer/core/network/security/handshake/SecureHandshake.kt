@@ -4,167 +4,226 @@ import com.filo.transfer.core.network.security.crypto.Hkdf
 import com.filo.transfer.core.network.security.crypto.SecureRandomWrapper
 
 /**
- * Main handshake protocol logic.
+ * State retained by the initiator after calling [SecureHandshake.initiate].
+ * Holds the ephemeral private key so it can be reused for completion.
+ */
+data class HandshakeInitiatorState(
+    val identity: SigningIdentity,
+    val ephemeral: EphemeralKeyPair,
+    val localMessage: HandshakeMessage
+)
+
+/**
+ * State retained by the responder after calling [SecureHandshake.respond].
+ * Holds the ephemeral private key and the full-transcript signature.
+ */
+data class HandshakeResponderState(
+    val identity: SigningIdentity,
+    val ephemeral: EphemeralKeyPair,
+    val localMessage: HandshakeMessage,
+    val fullTranscriptSignature: ByteArray
+)
+
+/**
+ * Result of [SecureHandshake.completeAsInitiator].
+ * Contains the session and the initiator's signature to send back to the peer.
+ */
+data class InitiatorCompletion(
+    val session: SecureSession,
+    val signatureToSend: ByteArray
+)
+
+/**
+ * Main handshake protocol.
  *
- * Two peers exchange HandshakeMessages, verify each other's identity
- * signatures, compute the ECDH shared secret, and derive directional
- * session keys via HKDF-SHA256.
+ * Protocol flow:
+ * 1. Initiator calls [initiate] → sends localMessage to peer
+ * 2. Responder calls [respond] with initiator's message → sends localMessage + signature
+ * 3. Initiator calls [completeAsInitiator] with state + responder's message + signature
+ *    → returns [InitiatorCompletion] with session + initiator's signature to send
+ * 4. Responder calls [completeAsResponder] with state + initiator's message + initiator's signature
  *
- * Both sides call [initiate] to create their local message,
- * then [complete] to verify the peer's message and produce a SecureSession.
- *
- * This class is stateless — all state is in the returned objects.
+ * Both peers sign and verify the SAME full transcript (binding both participants).
  */
 object SecureHandshake {
 
     const val PROTOCOL_VERSION: Byte = 1
-    private const val NONCE_LENGTH = 32
+
+    // ── Phase 1: Local message creation ─────────────────────────────────
 
     /**
-     * Create the local handshake message as the INITIATOR.
+     * Create the initiator's local handshake data.
+     * Generates a fresh ephemeral key pair and nonce.
      *
-     * @param identity the local signing identity (Keystore-backed in production,
-     *                 in-memory P-256 in tests)
-     * @return the message to send to the peer
+     * @return state to retain until [completeAsInitiator] is called
      */
-    fun initiate(identity: SigningIdentity): HandshakeMessage {
+    fun initiate(identity: SigningIdentity): HandshakeInitiatorState {
         val eph = EphemeralKeyPair.generateP256()
         val nonce = SecureRandomWrapper.nextNonce()
-
-        val transcript = HandshakeTranscript(
-            protocolVersion = PROTOCOL_VERSION,
-            role = 0, // initiator
-            idAlgorithm = identity.getIdentityAlgorithm(),
-            idPublicKey = identity.getIdentityPublicKey(),
-            ephPublicKey = eph.publicKeySpki,
-            nonce = nonce,
-            keyAgreementAlg = "P-256"
-        )
-        val signature = identity.signTranscript(transcript.encode())
-
-        return HandshakeMessage(
+        val msg = HandshakeMessage(
             protocolVersion = PROTOCOL_VERSION,
             role = 0,
             idAlgorithm = identity.getIdentityAlgorithm(),
             idPublicKey = identity.getIdentityPublicKey(),
             ephPublicKey = eph.publicKeySpki,
             nonce = nonce,
-            keyAgreementAlg = "P-256",
-            signature = signature
+            keyAgreementAlg = "P-256"
         )
+        return HandshakeInitiatorState(identity, eph, msg)
     }
 
     /**
-     * Create the local handshake message as the RESPONDER.
+     * Create the responder's local handshake data and sign the full transcript.
      *
-     * @param identity the local signing identity
-     * @return the message to send to the peer
+     * @param identity the responder's signing identity
+     * @param initiatorMsg the initiator's message (received from the wire)
+     * @return state with the full-transcript signature to send back
      */
-    fun respond(identity: SigningIdentity): HandshakeMessage {
+    fun respond(identity: SigningIdentity, initiatorMsg: HandshakeMessage): HandshakeResponderState {
+        validateIncomingMessage(initiatorMsg)
         val eph = EphemeralKeyPair.generateP256()
         val nonce = SecureRandomWrapper.nextNonce()
-
-        val transcript = HandshakeTranscript(
-            protocolVersion = PROTOCOL_VERSION,
-            role = 1, // responder
-            idAlgorithm = identity.getIdentityAlgorithm(),
-            idPublicKey = identity.getIdentityPublicKey(),
-            ephPublicKey = eph.publicKeySpki,
-            nonce = nonce,
-            keyAgreementAlg = "P-256"
-        )
-        val signature = identity.signTranscript(transcript.encode())
-
-        return HandshakeMessage(
+        val localMsg = HandshakeMessage(
             protocolVersion = PROTOCOL_VERSION,
             role = 1,
             idAlgorithm = identity.getIdentityAlgorithm(),
             idPublicKey = identity.getIdentityPublicKey(),
             ephPublicKey = eph.publicKeySpki,
             nonce = nonce,
-            keyAgreementAlg = "P-256",
-            signature = signature
+            keyAgreementAlg = "P-256"
         )
+        val fullTranscript = FullHandshakeTranscript(
+            protocolVersion = PROTOCOL_VERSION,
+            keyAgreementAlg = "P-256",
+            initiator = initiatorMsg.toData(),
+            responder = localMsg.toData()
+        )
+        val sig = identity.signTranscript(fullTranscript.encode())
+        return HandshakeResponderState(identity, eph, localMsg, sig)
     }
 
+    // ── Phase 2: Completion ────────────────────────────────────────────
+
     /**
-     * Complete the handshake from the INITIATOR side.
+     * Complete the handshake as the INITIATOR.
      *
-     * @param localMsg the initiator's message (from [initiate])
+     * @param state the initiator's state from [initiate]
      * @param peerMsg the responder's message
-     * @param localEphemeral the initiator's ephemeral key pair
-     * @return the authenticated SecureSession
+     * @param peerSig the responder's signature over the full transcript
+     * @return [InitiatorCompletion] with the session and the initiator's signature to send back
      */
     fun completeAsInitiator(
-        localMsg: HandshakeMessage,
+        state: HandshakeInitiatorState,
         peerMsg: HandshakeMessage,
-        localEphemeral: EphemeralKeyPair
-    ): SecureSession {
-        verifyPeerMessage(localMsg, peerMsg)
+        peerSig: ByteArray
+    ): InitiatorCompletion {
+        validateIncomingMessage(peerMsg)
+
+        val fullTranscript = FullHandshakeTranscript(
+            protocolVersion = PROTOCOL_VERSION,
+            keyAgreementAlg = "P-256",
+            initiator = state.localMessage.toData(),
+            responder = peerMsg.toData()
+        )
+
+        // Verify peer's signature over the full transcript
+        val peerVerified = IdentityVerifier.verify(
+            identityPublicKeySpki = peerMsg.idPublicKey,
+            identityAlgorithm = peerMsg.idAlgorithm,
+            transcript = fullTranscript.encode(),
+            signature = peerSig
+        )
+        if (!peerVerified) throw HandshakeError.InvalidSignature
+
+        // Sign the full transcript with our identity
+        val ourSig = state.identity.signTranscript(fullTranscript.encode())
+
+        // ECDH
         val sharedSecret = EphemeralKeyPair.sharedSecret(
-            localEphemeral.privateKey,
+            state.ephemeral.privateKey,
             peerMsg.ephPublicKey,
             "P-256"
         )
-        val peerEph = EphemeralKeyPair(
-            publicKeySpki = peerMsg.ephPublicKey,
-            privateKey = placeholder(), // not used by initiator
-            algorithm = "P-256"
-        )
-        return SecureSession.create(localMsg, peerMsg, sharedSecret, localEphemeral, peerEph)
+
+        val session = buildSession(fullTranscript, sharedSecret, peerMsg.idPublicKey, state.ephemeral)
+        return InitiatorCompletion(session, ourSig)
     }
 
     /**
-     * Complete the handshake from the RESPONDER side.
+     * Complete the handshake as the RESPONDER.
      *
-     * @param localMsg the responder's message (from [respond])
+     * @param state the responder's state from [respond]
      * @param peerMsg the initiator's message
-     * @param localEphemeral the responder's ephemeral key pair
-     * @return the authenticated SecureSession
+     * @param peerSig the initiator's signature over the full transcript
+     * @return authenticated [SecureSession]
      */
     fun completeAsResponder(
-        localMsg: HandshakeMessage,
+        state: HandshakeResponderState,
         peerMsg: HandshakeMessage,
-        localEphemeral: EphemeralKeyPair
+        peerSig: ByteArray
     ): SecureSession {
-        verifyPeerMessage(localMsg, peerMsg)
+        validateIncomingMessage(peerMsg)
+
+        val fullTranscript = FullHandshakeTranscript(
+            protocolVersion = PROTOCOL_VERSION,
+            keyAgreementAlg = "P-256",
+            initiator = peerMsg.toData(),
+            responder = state.localMessage.toData()
+        )
+
+        // Verify peer's signature over the full transcript
+        val peerVerified = IdentityVerifier.verify(
+            identityPublicKeySpki = peerMsg.idPublicKey,
+            identityAlgorithm = peerMsg.idAlgorithm,
+            transcript = fullTranscript.encode(),
+            signature = peerSig
+        )
+        if (!peerVerified) throw HandshakeError.InvalidSignature
+
+        // ECDH
         val sharedSecret = EphemeralKeyPair.sharedSecret(
-            localEphemeral.privateKey,
+            state.ephemeral.privateKey,
             peerMsg.ephPublicKey,
             "P-256"
         )
-        val peerEph = EphemeralKeyPair(
-            publicKeySpki = peerMsg.ephPublicKey,
-            privateKey = placeholder(),
-            algorithm = "P-256"
-        )
-        return SecureSession.create(localMsg, peerMsg, sharedSecret, localEphemeral, peerEph)
+
+        return buildSession(fullTranscript, sharedSecret, peerMsg.idPublicKey, state.ephemeral)
     }
 
-    /**
-     * Verify a peer's message: protocol version, algorithm, signature,
-     * and transcript integrity.
-     */
-    private fun verifyPeerMessage(localMsg: HandshakeMessage, peerMsg: HandshakeMessage) {
-        if (peerMsg.protocolVersion != PROTOCOL_VERSION) throw HandshakeError.MalformedHandshake
-        if (peerMsg.role == localMsg.role) throw HandshakeError.InvalidState
-        if (peerMsg.keyAgreementAlg != localMsg.keyAgreementAlg) throw HandshakeError.UnsupportedAlgorithm
-        if (!peerMsg.verifySignature()) throw HandshakeError.InvalidSignature
-        if (peerMsg.idAlgorithm != "Ed25519" && peerMsg.idAlgorithm != "SHA256withECDSA") {
+    // ── Internal helpers ───────────────────────────────────────────────
+
+    private fun buildSession(
+        fullTranscript: FullHandshakeTranscript,
+        sharedSecret: ByteArray,
+        peerIdentityPubKey: ByteArray,
+        localEphemeral: EphemeralKeyPair
+    ): SecureSession {
+        val transcriptHash = fullTranscript.hash()
+
+        // Derive 96 bytes: keyA(32) || keyB(32) || binding(32)
+        val material = Hkdf.deriveSessionMaterial(sharedSecret, transcriptHash)
+        val keyA = material.copyOfRange(0, 32)
+        val keyB = material.copyOfRange(32, 64)
+        val binding = material.copyOfRange(64, 96)
+
+        localEphemeral.destroy()
+
+        return SecureSession.create(
+            transcriptHash = transcriptHash,
+            peerIdentityPubKey = peerIdentityPubKey,
+            keyA = keyA,
+            keyB = keyB,
+            bindingKey = binding,
+            keyAgreementAlg = "P-256"
+        )
+    }
+
+    private fun validateIncomingMessage(msg: HandshakeMessage) {
+        if (msg.protocolVersion != PROTOCOL_VERSION) throw HandshakeError.MalformedHandshake
+        if (msg.idAlgorithm != "Ed25519" && msg.idAlgorithm != "SHA256withECDSA") {
             throw HandshakeError.UnsupportedAlgorithm
         }
-    }
-
-    /**
-     * Generate an ephemeral key pair for use with a handshake message.
-     * This is a convenience method that pairs [initiate] or [respond].
-     */
-    fun generateEphemeral(): EphemeralKeyPair = EphemeralKeyPair.generateP256()
-
-    private fun placeholder(): java.security.Key {
-        // This is never used for actual key agreement — it's a placeholder
-        // for the peer's ephemeral key which we don't hold the private part of.
-        // The actual shared secret is computed by the side that HAS the private key.
-        return EphemeralKeyPair.generateP256().privateKey
+        if (msg.keyAgreementAlg != "P-256") throw HandshakeError.UnsupportedAlgorithm
+        if (msg.nonce.size != 32) throw HandshakeError.MalformedHandshake
     }
 }

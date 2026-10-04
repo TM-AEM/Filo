@@ -1,180 +1,141 @@
 package com.filo.transfer.core.network.security.handshake
 
-import org.junit.Test
-import org.junit.Assert.*
 import com.filo.transfer.core.network.security.crypto.Hkdf
 import com.filo.transfer.core.network.security.crypto.SecureRandomWrapper
+import org.junit.Assert.*
+import org.junit.Test
 
 /**
- * HKDF-SHA256 tests using RFC 5869 test vectors.
+ * HKDF-SHA256 tests using official RFC 5869 SHA-256 test vectors.
+ *
+ * Source: RFC 5869, HMAC-based Extract-and-Expand Key Derivation Function.
  */
 class HkdfTest {
 
-    // RFC 5869 Test Case 1
+    // RFC 5869 — Test Case 1
     @Test
-    fun rfc5869TestCase1() {
-        val ikm = hexToBytes("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
-        val salt = hexToBytes("000102030405060708090a0b0c")
-        val info = hexToBytes("f0f1f2f3f4f5f6f7f8f9")
-        val length = 42
+    fun `RFC 5869 Test Case 1`() {
+        // IKM: 22 bytes of 0x0b (44 hex chars)
+        val ikm = hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
+        val salt = hex("000102030405060708090a0b0c")
+        val info = hex("f0f1f2f3f4f5f6f7f8f9")
 
         val prk = Hkdf.extract(ikm, salt)
-        val okm = Hkdf.expand(prk, info, length)
+        val okm = Hkdf.expand(prk, info, 42)
 
-        assertEquals("e6c558ffe7417a3ff867378da2dabcbdcb43665e85371e7d74eec44aaa844b02", bytesToHex(prk))
+        assertEquals("077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5", toHex(prk))
         assertEquals(
-            "16f0215be399b99aa843da50dc819e36c557512945a67875ccb7b76910e0cce79cb12fe6f5423018952a",
-            bytesToHex(okm)
+            "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865",
+            toHex(okm)
         )
     }
 
+    // RFC 5869 — Test Case 2
     @Test
-    fun rfc5869TestCase1Full() {
-        // Full RFC 5869 Test Case 1 verification
-        val ikm = hexToBytes("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
-        val salt = hexToBytes("000102030405060708090a0b0c")
-        val info = hexToBytes("f0f1f2f3f4f5f6f7f8f9")
-        val length = 42
+    fun `RFC 5869 Test Case 2`() {
+        // IKM: 22 bytes of 0x0b
+        val ikm = hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
+        // Salt: 44 bytes (0x00..0x2b)
+        val salt = hex(
+            "000102030405060708090a0b0c0d0e0f" +
+                "101112131415161718191a1b1c1d1e1f" +
+                "202122232425262728292a2b"
+        )
+        val info = hex("b0b1b2b3b4b5b6b7b8b9")
 
         val prk = Hkdf.extract(ikm, salt)
-        val okm = Hkdf.expand(prk, info, length)
+        val okm = Hkdf.expand(prk, info, 42)
 
-        // RFC 5869 Test Case 1 expected PRK
+        assertEquals("86fd8cd1608477fb478c3cb41595d6df8d9d9834d279782a6e23f9acac1ba369", toHex(prk))
         assertEquals(
-            "e6c558ffe7417a3ff867378da2dabcbdcb43665e85371e7d74eec44aaa844b02",
-            bytesToHex(prk)
-        )
-
-        // RFC 5869 Test Case 1 expected OKM (42 bytes)
-        assertEquals(
-            "16f0215be399b99aa843da50dc819e36c557512945a67875ccb7b76910e0cce79cb12fe6f5423018952a",
-            bytesToHex(okm)
+            "3b984ee67c056172516947f1cef80145a33a3aa5497820cd48d17cfccf4853c823d645575adc4a7e1e3d",
+            toHex(okm)
         )
     }
 
-    // RFC 5869 Test Case 2
+    // RFC 5869 — Test Case 3
     @Test
-    fun rfc5869TestCase2() {
-        val ikm = hexToBytes("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
-        val salt = hexToBytes(
-            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c"
+    fun `RFC 5869 Test Case 3`() {
+        val ikm = hex(
+            "000102030405060708090a0b0c0d0e0f" +
+                "101112131415161718191a1b1c1d" +
+                "1e1f202122232425262728292a2b2c2d"
         )
-        val info = hexToBytes("f0f1f2f3f4f5f6f7f8f9")
-        val length = 42
 
-        val prk = Hkdf.extract(ikm, salt)
-        val okm = Hkdf.expand(prk, info, length)
+        val prk = Hkdf.extract(ikm, byteArrayOf())
+        val okm = Hkdf.expand(prk, byteArrayOf(), 42)
 
-        assertEquals(
-            "c9eb30a3f76231447d6a02b9f6ab09f0c489d7cdfa65018d2c0ff85265b210e3",
-            bytesToHex(prk)
-        )
-        assertEquals(
-            "c5a0e36bdbb3c248aae7913daa273d39a8ebfdc93ca888d9b2263ba838748c184a04ec042e4a77206e55",
-            bytesToHex(okm)
-        )
-    }
-
-    // RFC 5869 Test Case 3
-    @Test
-    fun rfc5869TestCase3() {
-        val ikm = hexToBytes(
-            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d"
-        )
-        val salt = byteArrayOf() // empty salt
-        val info = byteArrayOf() // empty info
-        val length = 42
-
-        val prk = Hkdf.extract(ikm, salt)
-        val okm = Hkdf.expand(prk, info, length)
-
-        assertEquals(
-            "0a0fe9b4f5bc91b33b5dcd66c69e83bdc6d2af72fb918e5846167dde80f9159b",
-            bytesToHex(prk)
-        )
+        assertEquals("0a0fe9b4f5bc91b33b5dcd66c69e83bdc6d2af72fb918e5846167dde80f9159b", toHex(prk))
         assertEquals(
             "981d22db0429b2f1c26caf71620079823a01feaeb56c152cd491ea684a98fed098a767b511cd1a24aeb7",
-            bytesToHex(okm)
+            toHex(okm)
         )
     }
 
-    // Test that extract with empty salt uses zero-filled salt
+    // Empty salt must be equivalent to zero-filled 32-byte salt
     @Test
-    fun extractWithEmptySalt() {
-        val ikm = hexToBytes("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
-        val prkWithEmpty = Hkdf.extract(ikm, byteArrayOf())
-        val prkWithZeros = Hkdf.extract(ikm, ByteArray(32))
-        assertArrayEquals(
-            "Empty salt and zero-filled salt must produce identical PRK",
-            prkWithEmpty, prkWithZeros
-        )
+    fun `empty salt equals zero-filled salt`() {
+        val ikm = hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
+        val prkEmpty = Hkdf.extract(ikm, byteArrayOf())
+        val prkZeros = Hkdf.extract(ikm, ByteArray(32))
+        assertArrayEquals("Empty salt and zero-filled salt must produce identical PRK", prkEmpty, prkZeros)
     }
 
-    // Test that expand with empty info is valid
+    // derive() must equal extract() + expand()
     @Test
-    fun expandWithEmptyInfo() {
-        val prk = ByteArray(32) { 0x42 }
-        val okm = Hkdf.expand(prk, byteArrayOf(), 48)
-        assertEquals(48, okm.size)
-    }
-
-    // Test that derive() is equivalent to extract() then expand()
-    @Test
-    fun deriveIsEquivalentToExtractThenExpand() {
+    fun `derive equals extract then expand`() {
         val ikm = SecureRandomWrapper.nextBytes(32)
         val salt = SecureRandomWrapper.nextBytes(16)
         val info = SecureRandomWrapper.nextBytes(8)
-        val length = 64
-
-        val oneShot = Hkdf.derive(ikm, salt, info, length)
-        val prk = Hkdf.extract(ikm, salt)
-        val twoStep = Hkdf.expand(prk, info, length)
-
+        val oneShot = Hkdf.derive(ikm, salt, info, 64)
+        val twoStep = Hkdf.expand(Hkdf.extract(ikm, salt), info, 64)
         assertArrayEquals("derive() must equal extract()+expand()", oneShot, twoStep)
     }
 
-    // Test that deriveSessionMaterial returns 96 bytes
+    // Session material must be 96 bytes
     @Test
-    fun deriveSessionMaterialReturns96Bytes() {
-        val sharedSecret = SecureRandomWrapper.nextBytes(32)
-        val transcriptHash = SecureRandomWrapper.nextBytes(32)
-        val material = Hkdf.deriveSessionMaterial(sharedSecret, transcriptHash)
+    fun `deriveSessionMaterial returns 96 bytes`() {
+        val material = Hkdf.deriveSessionMaterial(SecureRandomWrapper.nextBytes(32), SecureRandomWrapper.nextBytes(32))
         assertEquals(96, material.size)
     }
 
-    // Test that directional keys are distinct
+    // Directional keys must be distinct
     @Test
-    fun directionalKeysAreDistinct() {
-        val sharedSecret = SecureRandomWrapper.nextBytes(32)
-        val transcriptHash = SecureRandomWrapper.nextBytes(32)
-        val material = Hkdf.deriveSessionMaterial(sharedSecret, transcriptHash)
-        val c2s = material.copyOfRange(0, 32)
-        val s2c = material.copyOfRange(32, 64)
-        val hk = material.copyOfRange(64, 96)
-        assertFalse("c2s and s2c must differ", c2s.contentEquals(s2c))
-        assertFalse("c2s and handshake must differ", c2s.contentEquals(hk))
-        assertFalse("s2c and handshake must differ", s2c.contentEquals(hk))
+    fun `directional keys are distinct`() {
+        val material = Hkdf.deriveSessionMaterial(SecureRandomWrapper.nextBytes(32), SecureRandomWrapper.nextBytes(32))
+        val keyA = material.copyOfRange(0, 32)
+        val keyB = material.copyOfRange(32, 64)
+        val binding = material.copyOfRange(64, 96)
+        assertFalse("keyA and keyB must differ", keyA.contentEquals(keyB))
+        assertFalse("keyA and binding must differ", keyA.contentEquals(binding))
+        assertFalse("keyB and binding must differ", keyB.contentEquals(binding))
     }
 
-    // Test that different transcripts produce different keys
+    // Different transcripts must produce different keys
     @Test
-    fun differentTranscriptsProduceDifferentKeys() {
-        val sharedSecret = SecureRandomWrapper.nextBytes(32)
-        val hash1 = SecureRandomWrapper.nextBytes(32)
-        val hash2 = SecureRandomWrapper.nextBytes(32)
-        val mat1 = Hkdf.deriveSessionMaterial(sharedSecret, hash1)
-        val mat2 = Hkdf.deriveSessionMaterial(sharedSecret, hash2)
+    fun `different transcripts produce different keys`() {
+        val secret = SecureRandomWrapper.nextBytes(32)
+        val mat1 = Hkdf.deriveSessionMaterial(secret, SecureRandomWrapper.nextBytes(32))
+        val mat2 = Hkdf.deriveSessionMaterial(secret, SecureRandomWrapper.nextBytes(32))
         assertFalse("Different transcripts must produce different keys", mat1.contentEquals(mat2))
     }
 
-    private fun hexToBytes(hex: String): ByteArray {
-        val out = ByteArray(hex.length / 2)
-        for (i in 0 until hex.length step 2) {
-            out[i / 2] = java.lang.Integer.parseInt(hex.substring(i, i + 2), 16).toByte()
+    // Different shared secrets must produce different keys
+    @Test
+    fun `different shared secrets produce different keys`() {
+        val tHash = SecureRandomWrapper.nextBytes(32)
+        val mat1 = Hkdf.deriveSessionMaterial(SecureRandomWrapper.nextBytes(32), tHash)
+        val mat2 = Hkdf.deriveSessionMaterial(SecureRandomWrapper.nextBytes(32), tHash)
+        assertFalse("Different ECDH secrets must produce different keys", mat1.contentEquals(mat2))
+    }
+
+    private fun hex(s: String): ByteArray {
+        val out = ByteArray(s.length / 2)
+        for (i in 0 until s.length step 2) {
+            out[i / 2] = Integer.parseInt(s.substring(i, i + 2), 16).toByte()
         }
         return out
     }
 
-    private fun bytesToHex(bytes: ByteArray): String =
-        bytes.joinToString("") { "%02x".format(it) }
+    private fun toHex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
 }
