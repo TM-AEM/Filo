@@ -6,16 +6,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 /**
- * HKDF-SHA256 tests using official RFC 5869 SHA-256 test vectors.
+ * HKDF-SHA256 tests.
  *
- * Source: RFC 5869, HMAC-based Extract-and-Expand Key Derivation Function.
+ * RFC 5869 test vectors from Appendix A (SHA-256).
+ * Project-specific correctness tests follow.
  */
 class HkdfTest {
 
-    // RFC 5869 — Test Case 1
+    // ── RFC 5869 Appendix A.1 ──────────────────────────────────────────
+
     @Test
     fun `RFC 5869 Test Case 1`() {
-        // IKM: 22 bytes of 0x0b (44 hex chars)
+        // A.1: IKM = 0x0b * 22, salt = 13 bytes, info = 10 bytes, L = 42
         val ikm = hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
         val salt = hex("000102030405060708090a0b0c")
         val info = hex("f0f1f2f3f4f5f6f7f8f9")
@@ -23,65 +25,92 @@ class HkdfTest {
         val prk = Hkdf.extract(ikm, salt)
         val okm = Hkdf.expand(prk, info, 42)
 
-        assertEquals("077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5", toHex(prk))
+        assertEquals(
+            "077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5",
+            toHex(prk)
+        )
         assertEquals(
             "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865",
             toHex(okm)
         )
     }
 
-    // RFC 5869 — Test Case 2
+    // ── RFC 5869 Appendix A.2 ──────────────────────────────────────────
+
     @Test
     fun `RFC 5869 Test Case 2`() {
-        // IKM: 22 bytes of 0x0b
-        val ikm = hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
-        // Salt: 44 bytes (0x00..0x2b)
-        val salt = hex(
+        // A.2: IKM = 80 bytes (0x00..0x4f), salt = 80 bytes (0x60..0xaf),
+        //       info = 80 bytes (0xb0..0xff), L = 82
+        val ikm = hex(
             "000102030405060708090a0b0c0d0e0f" +
                 "101112131415161718191a1b1c1d1e1f" +
-                "202122232425262728292a2b"
+                "202122232425262728292a2b2c2d2e2f" +
+                "303132333435363738393a3b3c3d3e3f" +
+                "404142434445464748494a4b4c4d4e4f"
         )
-        val info = hex("b0b1b2b3b4b5b6b7b8b9")
+        val salt = hex(
+            "606162636465666768696a6b6c6d6e6f" +
+                "707172737475767778797a7b7c7d7e7f" +
+                "808182838485868788898a8b8c8d8e8f" +
+                "909192939495969798999a9b9c9d9e9f" +
+                "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf"
+        )
+        val info = hex(
+            "b0b1b2b3b4b5b6b7b8b9babbbcbdbebf" +
+                "c0c1c2c3c4c5c6c7c8c9cacbcccdcecf" +
+                "d0d1d2d3d4d5d6d7d8d9dadbdcdddedf" +
+                "e0e1e2e3e4e5e6e7e8e9eaebecedeeef" +
+                "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+        )
 
         val prk = Hkdf.extract(ikm, salt)
-        val okm = Hkdf.expand(prk, info, 42)
+        val okm = Hkdf.expand(prk, info, 82)
 
-        assertEquals("86fd8cd1608477fb478c3cb41595d6df8d9d9834d279782a6e23f9acac1ba369", toHex(prk))
         assertEquals(
-            "3b984ee67c056172516947f1cef80145a33a3aa5497820cd48d17cfccf4853c823d645575adc4a7e1e3d",
+            "06a6b88c5853361a06104c9ceb35b45cef760014904671014a193f40c15fc244",
+            toHex(prk)
+        )
+        assertEquals(
+            "b11e398dc80327a1c8e7f78c596a49344f012eda2d4efad8a050cc4c19afa97c" +
+                "59045a99cac7827271cb41c65e590e09da3275600c2f09b8367793a9aca3db71" +
+                "cc30c58179ec3e87c14c01d5c1f3434f1d87",
             toHex(okm)
         )
     }
 
-    // RFC 5869 — Test Case 3
+    // ── RFC 5869 Appendix A.3 ──────────────────────────────────────────
+
     @Test
     fun `RFC 5869 Test Case 3`() {
-        val ikm = hex(
-            "000102030405060708090a0b0c0d0e0f" +
-                "101112131415161718191a1b1c1d" +
-                "1e1f202122232425262728292a2b2c2d"
-        )
+        // A.3: IKM = 0x0b * 22, empty salt, empty info, L = 42
+        val ikm = hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
 
         val prk = Hkdf.extract(ikm, byteArrayOf())
         val okm = Hkdf.expand(prk, byteArrayOf(), 42)
 
-        assertEquals("0a0fe9b4f5bc91b33b5dcd66c69e83bdc6d2af72fb918e5846167dde80f9159b", toHex(prk))
         assertEquals(
-            "981d22db0429b2f1c26caf71620079823a01feaeb56c152cd491ea684a98fed098a767b511cd1a24aeb7",
+            "19ef24a32c717b167f33a91d6f648bdf96596776afdb6377ac434c1c293ccb04",
+            toHex(prk)
+        )
+        assertEquals(
+            "8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d9d201395faa4b61a96c8",
             toHex(okm)
         )
     }
 
-    // Empty salt must be equivalent to zero-filled 32-byte salt
+    // ── Project-specific correctness tests ─────────────────────────────
+
     @Test
     fun `empty salt equals zero-filled salt`() {
-        val ikm = hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
+        val ikm = SecureRandomWrapper.nextBytes(32)
         val prkEmpty = Hkdf.extract(ikm, byteArrayOf())
         val prkZeros = Hkdf.extract(ikm, ByteArray(32))
-        assertArrayEquals("Empty salt and zero-filled salt must produce identical PRK", prkEmpty, prkZeros)
+        assertArrayEquals(
+            "Empty salt and zero-filled salt must produce identical PRK",
+            prkEmpty, prkZeros
+        )
     }
 
-    // derive() must equal extract() + expand()
     @Test
     fun `derive equals extract then expand`() {
         val ikm = SecureRandomWrapper.nextBytes(32)
@@ -92,17 +121,21 @@ class HkdfTest {
         assertArrayEquals("derive() must equal extract()+expand()", oneShot, twoStep)
     }
 
-    // Session material must be 96 bytes
     @Test
     fun `deriveSessionMaterial returns 96 bytes`() {
-        val material = Hkdf.deriveSessionMaterial(SecureRandomWrapper.nextBytes(32), SecureRandomWrapper.nextBytes(32))
+        val material = Hkdf.deriveSessionMaterial(
+            SecureRandomWrapper.nextBytes(32),
+            SecureRandomWrapper.nextBytes(32)
+        )
         assertEquals(96, material.size)
     }
 
-    // Directional keys must be distinct
     @Test
     fun `directional keys are distinct`() {
-        val material = Hkdf.deriveSessionMaterial(SecureRandomWrapper.nextBytes(32), SecureRandomWrapper.nextBytes(32))
+        val material = Hkdf.deriveSessionMaterial(
+            SecureRandomWrapper.nextBytes(32),
+            SecureRandomWrapper.nextBytes(32)
+        )
         val keyA = material.copyOfRange(0, 32)
         val keyB = material.copyOfRange(32, 64)
         val binding = material.copyOfRange(64, 96)
@@ -111,7 +144,6 @@ class HkdfTest {
         assertFalse("keyB and binding must differ", keyB.contentEquals(binding))
     }
 
-    // Different transcripts must produce different keys
     @Test
     fun `different transcripts produce different keys`() {
         val secret = SecureRandomWrapper.nextBytes(32)
@@ -120,7 +152,6 @@ class HkdfTest {
         assertFalse("Different transcripts must produce different keys", mat1.contentEquals(mat2))
     }
 
-    // Different shared secrets must produce different keys
     @Test
     fun `different shared secrets produce different keys`() {
         val tHash = SecureRandomWrapper.nextBytes(32)
