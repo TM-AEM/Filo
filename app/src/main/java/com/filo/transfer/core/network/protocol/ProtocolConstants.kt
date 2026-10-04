@@ -39,4 +39,10 @@ object ProtocolConstants {
 
     /** Extension added to temporary partially-received files */
     const val PARTIAL_FILE_SUFFIX = ".filo.part"
+
+    /** Maximum individual file size allowed in a manifest (4 GiB) */
+    const val MAX_FILE_SIZE_BYTES: Long = 4L * 1024 * 1024 * 1024
+
+    /** Maximum number of files allowed in a single manifest */
+    const val MAX_FILE_COUNT = 1000
 }

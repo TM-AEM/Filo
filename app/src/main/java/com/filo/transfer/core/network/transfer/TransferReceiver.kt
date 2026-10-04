@@ -229,6 +229,51 @@ class TransferReceiver(
         }
         val manifest = FramePayloads.decodeManifest(manifestFrame.payload)
 
+        // Resource limit validation: reject excessive file counts
+        if (manifest.files.size > ProtocolConstants.MAX_FILE_COUNT) {
+            val rejectPayload = FramePayloads.encodeManifestAck(
+                transferId = manifest.transferId,
+                accepted = false,
+                reason = "Manifest contains ${manifest.files.size} files, exceeding maximum of ${ProtocolConstants.MAX_FILE_COUNT}"
+            )
+            connection.sendFrame(ProtocolFrame(type = FrameType.MANIFEST_ACK, payload = rejectPayload))
+            throw NetworkError.OversizedPayload(
+                length = manifest.files.size,
+                maxAllowed = ProtocolConstants.MAX_FILE_COUNT,
+                message = "Manifest contains ${manifest.files.size} files, exceeding maximum of ${ProtocolConstants.MAX_FILE_COUNT}"
+            )
+        }
+
+        // Resource limit validation: reject individual file sizes exceeding limit or negative sizes
+        for (file in manifest.files) {
+            if (file.size < 0) {
+                val rejectPayload = FramePayloads.encodeManifestAck(
+                    transferId = manifest.transferId,
+                    accepted = false,
+                    reason = "File '${file.fileName}' has negative size ${file.size}"
+                )
+                connection.sendFrame(ProtocolFrame(type = FrameType.MANIFEST_ACK, payload = rejectPayload))
+                throw NetworkError.OversizedPayload(
+                    length = file.size.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                    maxAllowed = 0,
+                    message = "File '${file.fileName}' has negative size ${file.size}"
+                )
+            }
+            if (file.size > ProtocolConstants.MAX_FILE_SIZE_BYTES) {
+                val rejectPayload = FramePayloads.encodeManifestAck(
+                    transferId = manifest.transferId,
+                    accepted = false,
+                    reason = "File '${file.fileName}' size ${file.size} bytes exceeds maximum of ${ProtocolConstants.MAX_FILE_SIZE_BYTES} bytes"
+                )
+                connection.sendFrame(ProtocolFrame(type = FrameType.MANIFEST_ACK, payload = rejectPayload))
+                throw NetworkError.OversizedPayload(
+                    length = file.size.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                    maxAllowed = ProtocolConstants.MAX_FILE_SIZE_BYTES.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                    message = "File '${file.fileName}' size ${file.size} bytes exceeds maximum of ${ProtocolConstants.MAX_FILE_SIZE_BYTES} bytes"
+                )
+            }
+        }
+
         // Security check on all filenames
         for (file in manifest.files) {
             if (!FilenameValidator.isSafe(file.fileName)) {
