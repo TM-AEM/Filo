@@ -1,9 +1,15 @@
 package com.filo.transfer.core.network.security.crypto
 
-import android.security.keystore.KeyProperties
 import android.security.keystore.KeyGenParameterSpec
-import java.security.*
-import java.security.spec.*
+import android.security.keystore.KeyProperties
+import java.security.KeyFactory
+import java.security.KeyPair
+import java.security.KeyPairGenerator
+import java.security.KeyStore
+import java.security.PrivateKey
+import java.security.Signature
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
 // ============================================================================
 // IdentityManager — Persistent device identity
@@ -12,18 +18,25 @@ import java.security.spec.*
 object IdentityManager {
 
     private const val KEY_NAME = "filo_identity_key"
-    @Volatile private var algorithm = "Ed25519"
 
-    /** Public key bytes (X.509 SPKI). Computed once from Keystore. */
-    private val publicKey: ByteArray
+    @Volatile
+    private var algorithm = "Ed25519"
+
+    /** Public key bytes (X.509 SPKI). */
+    val identityPublicKey: ByteArray
         get() = loadPublicKey()
 
-    /** SHA-256 fingerprint of the public key (lowercase hex, exactly 64 chars). */
+    /** The identity signing algorithm in use. */
+    val identityAlgorithm: String
+        get() = algorithm
+
+    /** SHA-256 fingerprint of the public key (lowercase hex, 64 chars). */
     val fingerprint: String
-        get() = java.security.MessageDigest
-            .getInstance("SHA-256")
-            .digest(publicKey)
-            .joinToString("") { "%02x".format(it) }
+        get() {
+            val key = loadPublicKey()
+            val digest = java.security.MessageDigest.getInstance("SHA-256").digest(key)
+            return digest.joinToString("") { "%02x".format(it) }
+        }
 
     /** Sign data using the Keystore-protected private key. */
     fun sign(data: ByteArray): ByteArray? {
@@ -32,13 +45,13 @@ object IdentityManager {
             ks.load(null)
             if (!ks.containsAlias(KEY_NAME)) return null
             val privateKey = ks.getKey(KEY_NAME, null) as PrivateKey
-            val sig = java.security.Signature.getInstance(algorithm).also { s ->
-                s.initSign(privateKey); s.update(data)
-            }
+            val sig = Signature.getInstance(algorithm)
+            sig.initSign(privateKey)
+            sig.update(data)
             return sig.sign()
         } catch (e: Exception) {
             e.printStackTrace()
-            null
+            return null
         }
     }
 
@@ -48,8 +61,6 @@ object IdentityManager {
             val ks = KeyStore.getInstance("AndroidKeyStore")
             ks.load(null)
             if (ks.containsAlias(KEY_NAME)) {
-                // Key exists — generate a fresh keypair (we cannot extract the private
-                // key from Keystore, so we always generate new ones.)
                 return generateKeyPair()
             }
         } catch (e: Exception) {
@@ -58,89 +69,156 @@ object IdentityManager {
         return generateKeyPair()
     }
 
-    /** Generate a new Ed25519 (or P-256) keypair in Android Keystore. */
     private fun generateKeyPair(): KeyPair {
         return when (algorithm) {
             "Ed25519" -> {
                 val kpg = KeyPairGenerator.getInstance("Ed25519", "AndroidKeyStore")
-                kpg.initialize(
-                    KeyGenParameterSpec(KEY_NAME, KeyProperties.PURPOSE_SIGN, false, true, AlgorithmParameterSpec())
-                )
+                val spec = createKeyGenSpec(KEY_NAME, intArrayOf(KeyProperties.PURPOSE_SIGN))
+                kpg.initialize(spec)
                 kpg.generateKeyPair()
             }
             "P-256" -> {
-                val kpg = KeyPairGenerator.getInstance("X509", "AndroidKeyStore")
-                kpg.initialize(
-                    KeyGenParameterSpec(KEY_NAME, KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY, false, true, AlgorithmParameterSpec())
+                val kpg = KeyPairGenerator.getInstance("EC", "AndroidKeyStore")
+                val spec = createKeyGenSpec(
+                    KEY_NAME,
+                    intArrayOf(KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY)
                 )
+                kpg.initialize(spec)
                 kpg.generateKeyPair()
             }
             else -> throw IllegalArgumentException("Unsupported algorithm: $algorithm")
         }
     }
 
-    /** Load the public key from Keystore (or generate if absent). */
+    /**
+     * Create a KeyGenParameterSpec via reflection to work around
+     * Android SDK stubs not exposing the constructor directly.
+     */
+    private fun createKeyGenSpec(alias: String, purposes: IntArray): java.security.spec.AlgorithmParameterSpec {
+        val cls = Class.forName("android.security.keystore.KeyGenParameterSpec")
+        val ctor = cls.getConstructor(
+            String::class.java,
+            intArrayOf(0).javaClass,
+            booleanArrayOf(false).javaClass,
+            booleanArrayOf(false).javaClass,
+            java.security.spec.AlgorithmParameterSpec::class.java
+        )
+        return ctor.newInstance(alias, purposes[0], false, false, null) as java.security.spec.AlgorithmParameterSpec
+    }
+
     private fun loadPublicKey(): ByteArray {
         try {
             val ks = KeyStore.getInstance("AndroidKeyStore")
             ks.load(null)
             if (ks.containsAlias(KEY_NAME)) {
-                return ks.getCertificate(KEY_NAME).getEncoded()
+                return ks.getCertificate(KEY_NAME).encoded
             }
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        // Generate a new key pair and return its public part
-        return generateKeyPair().public.getEncoded()
+        return generateKeyPair().public.encoded
+    }
+
+    /** Verify an Ed25519 or ECDSA signature using a public key. */
+    fun verifySignature(
+        idPublicKeyBytes: ByteArray,
+        idAlgorithm: String,
+        transcript: ByteArray,
+        signature: ByteArray
+    ): Boolean {
+        try {
+            val keyFactory = KeyFactory.getInstance(
+                if (idAlgorithm == "Ed25519") "Ed25519" else "EC"
+            )
+            val publicKey = keyFactory.generatePublic(
+                java.security.spec.X509EncodedKeySpec(idPublicKeyBytes)
+            )
+            val sig = Signature.getInstance(idAlgorithm)
+            sig.initVerify(publicKey)
+            sig.update(transcript)
+            return sig.verify(signature)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
+        }
     }
 }
 
 // ============================================================================
-// HKDF-SHA256 (RFC 5869) — Minimal standalone utility
+// HKDF-SHA256 (RFC 5869) — Corrected implementation
 // ============================================================================
 
 object Hkdf {
 
-    /** HKDF-Extract: PRK = HMAC-SHA256(IKM || 0x01 || salt) */
-    private fun extract(ikm: ByteArray, salt: ByteArray): ByteArray {
-        val mac = javax.crypto.Mac.getInstance("HmacSHA256").also { m ->
-            m.init(java.security.KeyGenerator.getInstance("HmacSHA256").also { g ->
-                g.init(java.security.spec.AlgorithmParameterSpec(0))
-            })}
-        mac.update(ikm + 0x01.toByte())
-        return mac.doFinal(salt)
+    private const val HASH_LEN = 32
+
+    /**
+     * HKDF-Extract per RFC 5869 Section 2.2.
+     * PRK = HMAC-SHA256(salt, IKM)
+     * If salt is empty, use zero bytes of HASH_LEN length.
+     */
+    fun extract(ikm: ByteArray, salt: ByteArray): ByteArray {
+        val effectiveSalt = if (salt.isEmpty()) ByteArray(HASH_LEN) else salt
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(effectiveSalt, "HmacSHA256"))
+        return mac.doFinal(ikm)
     }
 
-    /** HKDF-Expand: DKM = T_1 || T_2 || ... || T_n,
-     *  where T_i = HMAC-SHA256(PRK || info || i), i = 1, 2, 3, ...
-     *  Output is truncated to `length` bytes. */
-    private fun expand(prk: ByteArray, info: ByteArray, length: Int): ByteArray {
-        val n = (length + 31) / 32  // ceil(len/32) rounds
-        var result = byteArrayOf()
-        var counter = 1
-        while (result.size < length && counter <= n) {
-            val mac = javax.crypto.Mac.getInstance("HmacSHA256").also { m ->
-                m.init(java.security.KeyGenerator.getInstance("HmacSHA256").also { g ->
-                    g.init(java.security.spec.AlgorithmParameterSpec(0))
-                })}
-            mac.update(prk + info + counter.toByte())
-            result = result + mac.doFinal()
-            counter++
+    /**
+     * HKDF-Expand per RFC 5869 Section 2.3.
+     * DKM = T(1) || T(2) || ... || T(N), truncated to `length` bytes.
+     * T(i) = HMAC-SHA256(PRK, T(i-1) || info || i)
+     * where i is a single byte counter starting at 1.
+     */
+    fun expand(prk: ByteArray, info: ByteArray, length: Int): ByteArray {
+        require(length > 0) { "Length must be positive" }
+        require(length <= 255 * HASH_LEN) { "Length too large" }
+        val n = (length + HASH_LEN - 1) / HASH_LEN
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(prk, "HmacSHA256"))
+        var previousT = ByteArray(0)
+        val result = ByteArray(length)
+        var offset = 0
+        for (i in 1..n) {
+            mac.reset()
+            mac.update(previousT)
+            if (info.isNotEmpty()) mac.update(info)
+            mac.update(i.toByte())
+            previousT = mac.doFinal()
+            val toCopy = if (i == n) length - offset else HASH_LEN
+            System.arraycopy(previousT, 0, result, offset, toCopy)
+            offset += toCopy
         }
-        return result.copyOfRange(0, length)
+        return result
     }
 
-    /** Derive key of desired length from IKM, optional salt+info.
-     *  Default salt: empty bytes. Default info: empty bytes. Default length: 32. */
-    fun derive(ikm: ByteArray, salt: ByteArray = byteArrayOf(), info: ByteArray = byteArrayOf(), length: Int = 32): ByteArray {
+    /**
+     * Full HKDF: Extract then Expand.
+     * @param ikm input key material
+     * @param salt optional salt (default: empty)
+     * @param info optional context (default: empty)
+     * @param length output length in bytes (default: 32)
+     */
+    fun derive(
+        ikm: ByteArray,
+        salt: ByteArray = byteArrayOf(),
+        info: ByteArray = byteArrayOf(),
+        length: Int = 32
+    ): ByteArray {
         val prk = extract(ikm, salt)
         return expand(prk, info, length)
     }
 
-    /** Derive a 32-byte AES-256-GCM session key from X25519/ECDH shared secret,
-     *  sender nonce (8 bytes), and receiver nonce (8 bytes). */
-    fun deriveSessionKey(sharedSecret: ByteArray, senderNonce: ByteArray, receiverNonce: ByteArray): ByteArray {
-        return derive(sharedSecret, byteArrayOf(), "filo-transfer-v1".toByteArray(), 32)
+    /**
+     * Derive directional session keys from ECDH shared secret + transcript hash.
+     *
+     * @param sharedSecret ECDH shared secret (32 bytes)
+     * @param transcriptHash SHA-256 of the full handshake transcript (32 bytes)
+     * @return 96 bytes: clientToServerKey(32) || serverToClientKey(32) || handshakeKey(32)
+     */
+    fun deriveSessionMaterial(sharedSecret: ByteArray, transcriptHash: ByteArray): ByteArray {
+        val info = "Filo-Secure-Session-v1".toByteArray() + transcriptHash
+        return derive(sharedSecret, byteArrayOf(), info, 96)
     }
 }
 
@@ -158,7 +236,7 @@ object SecureRandomWrapper {
         return buf
     }
 
-    fun nextNonce(): ByteArray = nextBytes(8)
+    fun nextNonce(): ByteArray = nextBytes(32)
 
     fun nextIv(): ByteArray = nextBytes(12)
 }
