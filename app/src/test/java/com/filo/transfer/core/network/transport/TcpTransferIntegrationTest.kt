@@ -8,12 +8,14 @@ import com.filo.transfer.core.network.protocol.FramePayloads
 import com.filo.transfer.core.network.protocol.FrameType
 import com.filo.transfer.core.network.protocol.ProtocolConstants
 import com.filo.transfer.core.network.protocol.ProtocolFrame
+import com.filo.transfer.core.network.security.handshake.InMemorySigningIdentity
 import com.filo.transfer.core.network.transfer.ChecksumCalculator
 import com.filo.transfer.core.network.transfer.LocalFileSource
 import com.filo.transfer.core.network.transfer.TransferFileSource
 import com.filo.transfer.core.network.transfer.TransferReceiver
 import com.filo.transfer.core.network.transfer.TransferSender
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -81,8 +83,8 @@ class TcpTransferIntegrationTest {
         serverTransport = server
         val port = server.bind(0)
 
-        val sender = TransferSender(deviceName = "SenderDevice")
-        val receiver = TransferReceiver(deviceName = "ReceiverDevice")
+        val sender = TransferSender(deviceName = "SenderDevice", signingIdentity = InMemorySigningIdentity.generate())
+        val receiver = TransferReceiver(deviceName = "ReceiverDevice", signingIdentity = InMemorySigningIdentity.generate())
 
         val manifest = TransferManifest(
             transferId = UUID.randomUUID().toString(),
@@ -139,8 +141,8 @@ class TcpTransferIntegrationTest {
         serverTransport = server
         val port = server.bind(0)
 
-        val sender = TransferSender()
-        val receiver = TransferReceiver()
+        val sender = TransferSender(signingIdentity = InMemorySigningIdentity.generate())
+        val receiver = TransferReceiver(signingIdentity = InMemorySigningIdentity.generate())
 
         val manifest = TransferManifest(
             transferId = UUID.randomUUID().toString(),
@@ -191,8 +193,8 @@ class TcpTransferIntegrationTest {
         serverTransport = server
         val port = server.bind(0)
 
-        val sender = TransferSender()
-        val receiver = TransferReceiver()
+        val sender = TransferSender(signingIdentity = InMemorySigningIdentity.generate())
+        val receiver = TransferReceiver(signingIdentity = InMemorySigningIdentity.generate())
 
         val manifest = TransferManifest(
             transferId = UUID.randomUUID().toString(),
@@ -240,8 +242,8 @@ class TcpTransferIntegrationTest {
         serverTransport = server
         val port = server.bind(0)
 
-        val sender = TransferSender()
-        val receiver = TransferReceiver()
+        val sender = TransferSender(signingIdentity = InMemorySigningIdentity.generate())
+        val receiver = TransferReceiver(signingIdentity = InMemorySigningIdentity.generate())
 
         val manifest = TransferManifest(
             transferId = UUID.randomUUID().toString(),
@@ -278,8 +280,8 @@ class TcpTransferIntegrationTest {
         serverTransport = server
         val port = server.bind(0)
 
-        val sender = TransferSender()
-        val receiver = TransferReceiver()
+        val sender = TransferSender(signingIdentity = InMemorySigningIdentity.generate())
+        val receiver = TransferReceiver(signingIdentity = InMemorySigningIdentity.generate())
 
         val readStarted = CompletableDeferred<Unit>()
 
@@ -342,8 +344,8 @@ class TcpTransferIntegrationTest {
         serverTransport = server
         val port = server.bind(0)
 
-        val sender = TransferSender()
-        val receiver = TransferReceiver()
+        val sender = TransferSender(signingIdentity = InMemorySigningIdentity.generate())
+        val receiver = TransferReceiver(signingIdentity = InMemorySigningIdentity.generate())
 
         val manifest = TransferManifest(
             transferId = UUID.randomUUID().toString(),
@@ -386,10 +388,10 @@ class TcpTransferIntegrationTest {
         serverTransport = server
         val port = server.bind(0)
 
-        val receiver = TransferReceiver()
+        val receiver = TransferReceiver(signingIdentity = InMemorySigningIdentity.generate())
 
         // Launch receiver waiting for transfer
-        val receiverDeferred = async {
+        val receiverDeferred = async(Dispatchers.IO) {
             val serverConn = server.accept()
             receiver.receive(serverConn, destDir)
         }
@@ -397,14 +399,7 @@ class TcpTransferIntegrationTest {
         val clientConn = TcpClientTransport.connect("127.0.0.1", port)
 
         // Simulate a sender that transmits data but sends an invalid/corrupted SHA-256
-        clientConn.sendFrame(
-            ProtocolFrame(
-                type = FrameType.HELLO,
-                payload = FramePayloads.encodeHello(ProtocolConstants.CURRENT_PROTOCOL_VERSION, "BadShaSender", "s-1")
-            )
-        )
-        val ack = clientConn.receiveFrame()
-        assertEquals(FrameType.HELLO_ACK, ack.type)
+        SecureHandshakeTestSupport.initiateAsClient(clientConn, InMemorySigningIdentity.generate())
 
         val manifest = TransferManifest(
             transferId = "corrupt-tx",
@@ -487,7 +482,7 @@ class TcpTransferIntegrationTest {
         val clientConn = TcpClientTransport.connect("127.0.0.1", port)
         receiverDeferred.await()
 
-        val sender = TransferSender()
+        val sender = TransferSender(signingIdentity = InMemorySigningIdentity.generate())
         val manifest = TransferManifest(
             transferId = "disc-test",
             senderDeviceName = "DisconnectSender",

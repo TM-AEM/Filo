@@ -4,6 +4,7 @@ import com.filo.transfer.core.network.model.ManifestFileItem
 import com.filo.transfer.core.network.model.TransferManifest
 import com.filo.transfer.core.network.model.TransferState
 import com.filo.transfer.core.network.protocol.ProtocolConstants
+import com.filo.transfer.core.network.security.handshake.InMemorySigningIdentity
 import com.filo.transfer.core.network.transport.TcpClientTransport
 import com.filo.transfer.core.network.transport.TcpServerTransport
 import kotlinx.coroutines.Dispatchers
@@ -65,8 +66,8 @@ class TransferReceiverCollisionCascadeTest {
         serverTransport = server
         val port = server.bind(0)
 
-        val sender = TransferSender(deviceName = "D72Sender")
-        val receiver = TransferReceiver(deviceName = "D72Receiver")
+        val sender = TransferSender(deviceName = "D72Sender", signingIdentity = InMemorySigningIdentity.generate())
+        val receiver = TransferReceiver(deviceName = "D72Receiver", signingIdentity = InMemorySigningIdentity.generate())
 
         val manifest = TransferManifest(
             transferId = UUID.randomUUID().toString(),

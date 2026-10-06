@@ -9,6 +9,12 @@ import com.filo.transfer.core.network.protocol.FramePayloads
 import com.filo.transfer.core.network.protocol.FrameType
 import com.filo.transfer.core.network.protocol.ProtocolConstants
 import com.filo.transfer.core.network.protocol.ProtocolFrame
+import com.filo.transfer.core.network.security.handshake.HandshakeError
+import com.filo.transfer.core.network.security.handshake.HandshakeFraming
+import com.filo.transfer.core.network.security.handshake.KeystoreSigningIdentity
+import com.filo.transfer.core.network.security.handshake.SecureHandshake
+import com.filo.transfer.core.network.security.handshake.SigningIdentity
+import com.filo.transfer.core.network.transport.SecureTransportState
 import com.filo.transfer.core.network.transport.SocketConnection
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -18,6 +24,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import java.io.InputStream
+import java.security.GeneralSecurityException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -25,9 +32,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * Enforces bounded memory buffers, incremental SHA-256 calculation, deterministic file ordering,
  * real-time throughput metrics, pause/resume coordination, and immediate cancellation cleanup.
+ *
+ * All post-handshake application traffic runs over the Task 21G/21A secure transport:
+ * the initiator completes a crypto [SecureHandshake] before any manifest or data frame is sent.
  */
 class TransferSender(
-    val deviceName: String = "FiloSender"
+    val deviceName: String = "FiloSender",
+    val signingIdentity: SigningIdentity = KeystoreSigningIdentity()
 ) {
     private val _state = MutableStateFlow<TransferState>(TransferState.Idle)
     val state: StateFlow<TransferState> = _state.asStateFlow()
@@ -115,7 +126,7 @@ class TransferSender(
 
             // 2. Handshake Phase
             transitionTo(TransferState.Handshaking)
-            performHandshake(connection, manifest.transferId)
+            performHandshake(connection)
 
             // 3. Manifest Exchange Phase
             exchangeManifest(connection, manifest.copy(files = sortedFiles))
@@ -187,26 +198,34 @@ class TransferSender(
         }
     }
 
-    private fun performHandshake(connection: SocketConnection, sessionId: String) {
-        val helloPayload = FramePayloads.encodeHello(
-            version = ProtocolConstants.CURRENT_PROTOCOL_VERSION,
-            deviceName = deviceName,
-            sessionId = sessionId
-        )
-        connection.sendFrame(
-            ProtocolFrame(
-                type = FrameType.HELLO,
-                payload = helloPayload
-            )
-        )
+    private fun performHandshake(connection: SocketConnection) {
+        try {
+            val initiatorState = SecureHandshake.initiate(signingIdentity)
 
-        val ackFrame = connection.receiveFrame()
-        if (ackFrame.type != FrameType.HELLO_ACK) {
-            throw NetworkError.HandshakeFailed("Expected HELLO_ACK frame, got: ${ackFrame.type}")
-        }
-        val ack = FramePayloads.decodeHelloAck(ackFrame.payload)
-        if (!ack.accepted) {
-            throw NetworkError.HandshakeFailed("Peer rejected handshake")
+            connection.sendHandshakeFrame(
+                FrameType.HELLO,
+                HandshakeFraming.helloPayload(initiatorState.localMessage)
+            )
+
+            val ackFrame = connection.receiveHandshakeFrame()
+            if (ackFrame.type != FrameType.HELLO_ACK) {
+                throw NetworkError.HandshakeFailed("Expected HELLO_ACK frame, got: ${ackFrame.type}")
+            }
+            val split = HandshakeFraming.decodeHelloAck(ackFrame.payload)
+
+            val completion = SecureHandshake.completeAsInitiator(
+                state = initiatorState,
+                peerMsg = split.message,
+                peerSig = split.signature
+            )
+
+            connection.sendHandshakeFrame(FrameType.HANDSHAKE_FINISH, completion.signatureToSend)
+
+            connection.enterSecure(SecureTransportState.forInitiator(completion.session))
+        } catch (e: HandshakeError) {
+            throw NetworkError.HandshakeFailed("Initiator handshake failed: ${e.category}", e)
+        } catch (e: GeneralSecurityException) {
+            throw NetworkError.HandshakeFailed("Cryptographic operation failed during handshake", e)
         }
     }
 

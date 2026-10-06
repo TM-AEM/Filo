@@ -7,6 +7,9 @@ import com.filo.transfer.core.network.protocol.FramePayloads
 import com.filo.transfer.core.network.protocol.FrameType
 import com.filo.transfer.core.network.protocol.ProtocolConstants
 import com.filo.transfer.core.network.protocol.ProtocolFrame
+import com.filo.transfer.core.network.security.handshake.InMemorySigningIdentity
+import com.filo.transfer.core.network.security.handshake.SigningIdentity
+import com.filo.transfer.core.network.transport.SecureHandshakeTestSupport
 import com.filo.transfer.core.network.transport.TcpClientTransport
 import com.filo.transfer.core.network.transport.TcpServerTransport
 import kotlinx.coroutines.Dispatchers
@@ -76,22 +79,12 @@ class TransferReceiverPartialCleanupTest {
 
     private suspend fun handshakeAndStartFile(
         clientConn: com.filo.transfer.core.network.transport.SocketConnection,
+        identity: SigningIdentity,
         fileName: String,
         fileSize: Long,
         fileId: String = "d71"
     ) = withContext(Dispatchers.IO) {
-        clientConn.sendFrame(
-            ProtocolFrame(
-                type = FrameType.HELLO,
-                payload = FramePayloads.encodeHello(
-                    ProtocolConstants.CURRENT_PROTOCOL_VERSION,
-                    "D71Sender",
-                    "d71-session"
-                )
-            )
-        )
-        val helloAck = clientConn.receiveFrame()
-        assertEquals(FrameType.HELLO_ACK, helloAck.type)
+        SecureHandshakeTestSupport.initiateAsClient(clientConn, identity)
 
         val manifest = TransferManifest(
             transferId = UUID.randomUUID().toString(),
@@ -130,7 +123,7 @@ class TransferReceiverPartialCleanupTest {
         val server = TcpServerTransport()
         serverTransport = server
         val port = server.bind(0)
-        val receiver = TransferReceiver("D71Receiver")
+        val receiver = TransferReceiver("D71Receiver", InMemorySigningIdentity.generate())
 
         val receiverDeferred = async(Dispatchers.IO) {
             val serverConn = server.accept()
@@ -138,7 +131,7 @@ class TransferReceiverPartialCleanupTest {
         }
 
         val clientConn = TcpClientTransport.connect("127.0.0.1", port)
-        handshakeAndStartFile(clientConn, fileName, fileSize)
+        handshakeAndStartFile(clientConn, InMemorySigningIdentity.generate(), fileName, fileSize)
         withContext(Dispatchers.IO) {
             clientConn.sendFrame(
                 ProtocolFrame(type = FrameType.DATA_CHUNK, sequence = 0L, payload = ByteArray(4096) { 1 })
@@ -169,8 +162,8 @@ class TransferReceiverPartialCleanupTest {
         serverTransport = server
         val port = server.bind(0)
 
-        val sender = TransferSender(deviceName = "D71SuccessSender")
-        val receiver = TransferReceiver(deviceName = "D71SuccessReceiver")
+        val sender = TransferSender(deviceName = "D71SuccessSender", signingIdentity = InMemorySigningIdentity.generate())
+        val receiver = TransferReceiver(deviceName = "D71SuccessReceiver", signingIdentity = InMemorySigningIdentity.generate())
 
         val manifest = TransferManifest(
             transferId = UUID.randomUUID().toString(),
@@ -208,7 +201,7 @@ class TransferReceiverPartialCleanupTest {
         val server = TcpServerTransport()
         serverTransport = server
         val port = server.bind(0)
-        val receiver = TransferReceiver("D71PauseReceiver")
+        val receiver = TransferReceiver("D71PauseReceiver", InMemorySigningIdentity.generate())
 
         val receiverDeferred = async(Dispatchers.IO) {
             val serverConn = server.accept()
@@ -216,7 +209,7 @@ class TransferReceiverPartialCleanupTest {
         }
 
         val clientConn = TcpClientTransport.connect("127.0.0.1", port)
-        handshakeAndStartFile(clientConn, fileName, fileSize, fileId = "p1")
+        handshakeAndStartFile(clientConn, InMemorySigningIdentity.generate(), fileName, fileSize, fileId = "p1")
         withContext(Dispatchers.IO) {
             clientConn.sendFrame(
                 ProtocolFrame(type = FrameType.DATA_CHUNK, sequence = 0L, payload = ByteArray(4096) { 2 })
@@ -256,8 +249,8 @@ class TransferReceiverPartialCleanupTest {
         serverTransport = server
         val port = server.bind(0)
 
-        val sender = TransferSender()
-        val receiver = TransferReceiver()
+        val sender = TransferSender(signingIdentity = InMemorySigningIdentity.generate())
+        val receiver = TransferReceiver(signingIdentity = InMemorySigningIdentity.generate())
 
         val manifest = TransferManifest(
             transferId = UUID.randomUUID().toString(),

@@ -49,8 +49,7 @@ object IdentityManager {
             sig.initSign(privateKey)
             sig.update(data)
             return sig.sign()
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (_: Exception) {
             return null
         }
     }
@@ -66,8 +65,8 @@ object IdentityManager {
                 val cert = ks.getCertificate(KEY_NAME)
                 return KeyPair(cert.publicKey, privateKey)
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (_: Exception) {
+            // keystore unavailable or key not yet stored — fall through to generation below
         }
         // Key does not exist yet — generate and store exactly one new identity
         return generateKeyPair()
@@ -117,8 +116,8 @@ object IdentityManager {
             if (ks.containsAlias(KEY_NAME)) {
                 return ks.getCertificate(KEY_NAME).encoded
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (_: Exception) {
+            // keystore unavailable or key not yet stored — fall through to generation below
         }
         return generateKeyPair().public.encoded
     }
@@ -141,8 +140,7 @@ object IdentityManager {
             sig.initVerify(publicKey)
             sig.update(transcript)
             return sig.verify(signature)
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (_: Exception) {
             return false
         }
     }
