@@ -8,6 +8,9 @@ import com.filo.transfer.core.network.protocol.FramePayloads
 import com.filo.transfer.core.network.protocol.FrameType
 import com.filo.transfer.core.network.protocol.ProtocolConstants
 import com.filo.transfer.core.network.protocol.ProtocolFrame
+import com.filo.transfer.core.network.security.handshake.InMemorySigningIdentity
+import com.filo.transfer.core.network.security.handshake.SigningIdentity
+import com.filo.transfer.core.network.transport.SecureHandshakeTestSupport
 import com.filo.transfer.core.network.transport.SocketConnection
 import com.filo.transfer.core.network.transport.TcpClientTransport
 import com.filo.transfer.core.network.transport.TcpServerTransport
@@ -70,22 +73,12 @@ class TransferReceiverFailureCleanupTest {
 
     private suspend fun handshakeAndStartFile(
         clientConn: SocketConnection,
+        identity: SigningIdentity,
         fileName: String,
         fileSize: Long,
         fileId: String = "fcl"
     ) = withContext(Dispatchers.IO) {
-        clientConn.sendFrame(
-            ProtocolFrame(
-                type = FrameType.HELLO,
-                payload = FramePayloads.encodeHello(
-                    ProtocolConstants.CURRENT_PROTOCOL_VERSION,
-                    "FclSender",
-                    "fcl-session"
-                )
-            )
-        )
-        val helloAck = clientConn.receiveFrame()
-        assertEquals(FrameType.HELLO_ACK, helloAck.type)
+        SecureHandshakeTestSupport.initiateAsClient(clientConn, identity)
 
         val manifest = TransferManifest(
             transferId = UUID.randomUUID().toString(),
@@ -144,7 +137,7 @@ class TransferReceiverFailureCleanupTest {
         val server = TcpServerTransport()
         serverTransport = server
         val port = server.bind(0)
-        val receiver = TransferReceiver("PeerDiscReceiver")
+        val receiver = TransferReceiver("PeerDiscReceiver", InMemorySigningIdentity.generate())
 
         val receiverDeferred = async(Dispatchers.IO) {
             val serverConn = server.accept()
@@ -152,7 +145,7 @@ class TransferReceiverFailureCleanupTest {
         }
 
         val clientConn = TcpClientTransport.connect("127.0.0.1", port)
-        handshakeAndStartFile(clientConn, fileName, fileSize)
+        handshakeAndStartFile(clientConn, InMemorySigningIdentity.generate(), fileName, fileSize)
         sendChunks(clientConn, 4)
 
         waitUntil {
@@ -191,7 +184,7 @@ class TransferReceiverFailureCleanupTest {
         val server = TcpServerTransport()
         serverTransport = server
         val port = server.bind(0)
-        val receiver = TransferReceiver("InvalidFrameReceiver")
+        val receiver = TransferReceiver("InvalidFrameReceiver", InMemorySigningIdentity.generate())
 
         val receiverDeferred = async(Dispatchers.IO) {
             val serverConn = server.accept()
@@ -199,7 +192,7 @@ class TransferReceiverFailureCleanupTest {
         }
 
         val clientConn = TcpClientTransport.connect("127.0.0.1", port)
-        handshakeAndStartFile(clientConn, fileName, fileSize)
+        handshakeAndStartFile(clientConn, InMemorySigningIdentity.generate(), fileName, fileSize)
         sendChunks(clientConn, 4)
 
         waitUntil {
@@ -250,7 +243,7 @@ class TransferReceiverFailureCleanupTest {
         val server = TcpServerTransport()
         serverTransport = server
         val port = server.bind(0)
-        val receiver = TransferReceiver("IoFailReceiver")
+        val receiver = TransferReceiver("IoFailReceiver", InMemorySigningIdentity.generate())
 
         val receiverDeferred = async(Dispatchers.IO) {
             val serverConn = server.accept()
@@ -258,7 +251,7 @@ class TransferReceiverFailureCleanupTest {
         }
 
         val clientConn = TcpClientTransport.connect("127.0.0.1", port)
-        handshakeAndStartFile(clientConn, fileName, fileSize)
+        handshakeAndStartFile(clientConn, InMemorySigningIdentity.generate(), fileName, fileSize)
 
         withTimeout(5_000) { receiverDeferred.await() }
 
@@ -288,7 +281,7 @@ class TransferReceiverFailureCleanupTest {
         val server = TcpServerTransport()
         serverTransport = server
         val port = server.bind(0)
-        val receiver = TransferReceiver("PauseDiscReceiver")
+        val receiver = TransferReceiver("PauseDiscReceiver", InMemorySigningIdentity.generate())
 
         val receiverDeferred = async(Dispatchers.IO) {
             val serverConn = server.accept()
@@ -296,7 +289,7 @@ class TransferReceiverFailureCleanupTest {
         }
 
         val clientConn = TcpClientTransport.connect("127.0.0.1", port)
-        handshakeAndStartFile(clientConn, fileName, fileSize)
+        handshakeAndStartFile(clientConn, InMemorySigningIdentity.generate(), fileName, fileSize)
         sendChunks(clientConn, 4)
 
         waitUntil {
@@ -345,7 +338,7 @@ class TransferReceiverFailureCleanupTest {
         val server = TcpServerTransport()
         serverTransport = server
         val port = server.bind(0)
-        val receiver = TransferReceiver("ChecksumFailReceiver")
+        val receiver = TransferReceiver("ChecksumFailReceiver", InMemorySigningIdentity.generate())
 
         val receiverDeferred = async(Dispatchers.IO) {
             val serverConn = server.accept()
@@ -355,17 +348,7 @@ class TransferReceiverFailureCleanupTest {
         val clientConn = TcpClientTransport.connect("127.0.0.1", port)
         // Handshake + manifest + file header + resume response
         withContext(Dispatchers.IO) {
-            clientConn.sendFrame(
-                ProtocolFrame(
-                    type = FrameType.HELLO,
-                    payload = FramePayloads.encodeHello(
-                        ProtocolConstants.CURRENT_PROTOCOL_VERSION,
-                        "CsSender",
-                        "cs-session"
-                    )
-                )
-            )
-            clientConn.receiveFrame() // HELLO_ACK
+            SecureHandshakeTestSupport.initiateAsClient(clientConn, InMemorySigningIdentity.generate())
 
             val manifest = TransferManifest(
                 transferId = UUID.randomUUID().toString(),

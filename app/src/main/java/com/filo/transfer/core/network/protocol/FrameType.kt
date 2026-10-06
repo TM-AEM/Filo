@@ -6,6 +6,7 @@ package com.filo.transfer.core.network.protocol
 enum class FrameType(val code: Byte) {
     HELLO(0x01),
     HELLO_ACK(0x02),
+    HANDSHAKE_FINISH(0x03),
 
     MANIFEST(0x10),
     MANIFEST_ACK(0x11),

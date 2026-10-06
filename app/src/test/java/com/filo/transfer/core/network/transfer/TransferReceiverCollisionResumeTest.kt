@@ -71,8 +71,8 @@ class TransferReceiverCollisionResumeTest {
         serverTransport = server
         val port = server.bind(0)
 
-        val sender = TransferSender(deviceName = "D73Sender")
-        val receiver = TransferReceiver(deviceName = "D73Receiver")
+        val sender = TransferSender(deviceName = "D73Sender", signingIdentity = com.filo.transfer.core.network.security.handshake.InMemorySigningIdentity.generate())
+        val receiver = TransferReceiver(deviceName = "D73Receiver", signingIdentity = com.filo.transfer.core.network.security.handshake.InMemorySigningIdentity.generate())
 
         val manifest = TransferManifest(
             transferId = UUID.randomUUID().toString(),

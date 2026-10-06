@@ -8,6 +8,8 @@ import com.filo.transfer.core.network.protocol.FramePayloads
 import com.filo.transfer.core.network.protocol.FrameType
 import com.filo.transfer.core.network.protocol.ProtocolConstants
 import com.filo.transfer.core.network.protocol.ProtocolFrame
+import com.filo.transfer.core.network.security.handshake.InMemorySigningIdentity
+import com.filo.transfer.core.network.transport.SecureHandshakeTestSupport
 import com.filo.transfer.core.network.transport.SocketConnection
 import com.filo.transfer.core.network.transport.TcpClientTransport
 import com.filo.transfer.core.network.transport.TcpServerTransport
@@ -64,7 +66,7 @@ class TransferReceiverManifestLimitTest {
             val server = TcpServerTransport()
             serverTransport = server
             val port = server.bind(0)
-            val receiver = TransferReceiver("LimitReceiver")
+            val receiver = TransferReceiver("LimitReceiver", InMemorySigningIdentity.generate())
 
             val receiverDeferred = async(Dispatchers.IO) {
                 val serverConn = server.accept()
@@ -72,17 +74,7 @@ class TransferReceiverManifestLimitTest {
             }
 
             // Complete handshake
-            clientConn.sendFrame(
-                ProtocolFrame(
-                    type = FrameType.HELLO,
-                    payload = FramePayloads.encodeHello(
-                        ProtocolConstants.CURRENT_PROTOCOL_VERSION,
-                        "LimitSender",
-                        "limit-session"
-                    )
-                )
-            )
-            clientConn.receiveFrame() // HELLO_ACK
+            SecureHandshakeTestSupport.initiateAsClient(clientConn, InMemorySigningIdentity.generate())
 
             // Send manifest
             clientConn.sendFrame(
@@ -109,7 +101,7 @@ class TransferReceiverManifestLimitTest {
         val server = TcpServerTransport()
         serverTransport = server
         val port = server.bind(0)
-        val receiver = TransferReceiver("LimitReceiver")
+        val receiver = TransferReceiver("LimitReceiver", InMemorySigningIdentity.generate())
 
         val receiverDeferred = async(Dispatchers.IO) {
             val serverConn = server.accept()
@@ -118,17 +110,7 @@ class TransferReceiverManifestLimitTest {
 
         val clientConn = TcpClientTransport.connect("127.0.0.1", port)
         withContext(Dispatchers.IO) {
-            clientConn.sendFrame(
-                ProtocolFrame(
-                    type = FrameType.HELLO,
-                    payload = FramePayloads.encodeHello(
-                        ProtocolConstants.CURRENT_PROTOCOL_VERSION,
-                        "LimitSender",
-                        "limit-session"
-                    )
-                )
-            )
-            clientConn.receiveFrame() // HELLO_ACK
+            SecureHandshakeTestSupport.initiateAsClient(clientConn, InMemorySigningIdentity.generate())
             clientConn.sendFrame(
                 ProtocolFrame(type = FrameType.MANIFEST, payload = FramePayloads.encodeManifest(manifest))
             )
@@ -168,7 +150,7 @@ class TransferReceiverManifestLimitTest {
         val server = TcpServerTransport()
         serverTransport = server
         val port = server.bind(0)
-        val receiver = TransferReceiver("LimitReceiver")
+        val receiver = TransferReceiver("LimitReceiver", InMemorySigningIdentity.generate())
 
         val receiverDeferred = async(Dispatchers.IO) {
             val serverConn = server.accept()
@@ -177,17 +159,7 @@ class TransferReceiverManifestLimitTest {
 
         val clientConn = TcpClientTransport.connect("127.0.0.1", port)
         withContext(Dispatchers.IO) {
-            clientConn.sendFrame(
-                ProtocolFrame(
-                    type = FrameType.HELLO,
-                    payload = FramePayloads.encodeHello(
-                        ProtocolConstants.CURRENT_PROTOCOL_VERSION,
-                        "LimitSender",
-                        "limit-session"
-                    )
-                )
-            )
-            clientConn.receiveFrame() // HELLO_ACK
+            SecureHandshakeTestSupport.initiateAsClient(clientConn, InMemorySigningIdentity.generate())
             clientConn.sendFrame(
                 ProtocolFrame(type = FrameType.MANIFEST, payload = FramePayloads.encodeManifest(manifest))
             )
@@ -224,7 +196,7 @@ class TransferReceiverManifestLimitTest {
         val server = TcpServerTransport()
         serverTransport = server
         val port = server.bind(0)
-        val receiver = TransferReceiver("LimitReceiver")
+        val receiver = TransferReceiver("LimitReceiver", InMemorySigningIdentity.generate())
 
         val receiverDeferred = async(Dispatchers.IO) {
             val serverConn = server.accept()
@@ -233,17 +205,7 @@ class TransferReceiverManifestLimitTest {
 
         val clientConn = TcpClientTransport.connect("127.0.0.1", port)
         withContext(Dispatchers.IO) {
-            clientConn.sendFrame(
-                ProtocolFrame(
-                    type = FrameType.HELLO,
-                    payload = FramePayloads.encodeHello(
-                        ProtocolConstants.CURRENT_PROTOCOL_VERSION,
-                        "LimitSender",
-                        "limit-session"
-                    )
-                )
-            )
-            clientConn.receiveFrame() // HELLO_ACK
+            SecureHandshakeTestSupport.initiateAsClient(clientConn, InMemorySigningIdentity.generate())
             clientConn.sendFrame(
                 ProtocolFrame(type = FrameType.MANIFEST, payload = FramePayloads.encodeManifest(manifest))
             )
@@ -283,7 +245,7 @@ class TransferReceiverManifestLimitTest {
         val server = TcpServerTransport()
         serverTransport = server
         val port = server.bind(0)
-        val receiver = TransferReceiver("LimitReceiver")
+        val receiver = TransferReceiver("LimitReceiver", InMemorySigningIdentity.generate())
 
         val receiverDeferred = async(Dispatchers.IO) {
             val serverConn = server.accept()
@@ -292,17 +254,7 @@ class TransferReceiverManifestLimitTest {
 
         val clientConn = TcpClientTransport.connect("127.0.0.1", port)
         withContext(Dispatchers.IO) {
-            clientConn.sendFrame(
-                ProtocolFrame(
-                    type = FrameType.HELLO,
-                    payload = FramePayloads.encodeHello(
-                        ProtocolConstants.CURRENT_PROTOCOL_VERSION,
-                        "LimitSender",
-                        "limit-session"
-                    )
-                )
-            )
-            clientConn.receiveFrame() // HELLO_ACK
+            SecureHandshakeTestSupport.initiateAsClient(clientConn, InMemorySigningIdentity.generate())
             clientConn.sendFrame(
                 ProtocolFrame(type = FrameType.MANIFEST, payload = FramePayloads.encodeManifest(manifest))
             )
@@ -337,7 +289,7 @@ class TransferReceiverManifestLimitTest {
         val server = TcpServerTransport()
         serverTransport = server
         val port = server.bind(0)
-        val receiver = TransferReceiver("LimitReceiver")
+        val receiver = TransferReceiver("LimitReceiver", InMemorySigningIdentity.generate())
 
         val receiverDeferred = async(Dispatchers.IO) {
             val serverConn = server.accept()
@@ -346,17 +298,7 @@ class TransferReceiverManifestLimitTest {
 
         val clientConn = TcpClientTransport.connect("127.0.0.1", port)
         withContext(Dispatchers.IO) {
-            clientConn.sendFrame(
-                ProtocolFrame(
-                    type = FrameType.HELLO,
-                    payload = FramePayloads.encodeHello(
-                        ProtocolConstants.CURRENT_PROTOCOL_VERSION,
-                        "LimitSender",
-                        "limit-session"
-                    )
-                )
-            )
-            clientConn.receiveFrame() // HELLO_ACK
+            SecureHandshakeTestSupport.initiateAsClient(clientConn, InMemorySigningIdentity.generate())
             clientConn.sendFrame(
                 ProtocolFrame(type = FrameType.MANIFEST, payload = FramePayloads.encodeManifest(manifest))
             )

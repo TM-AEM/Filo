@@ -5,6 +5,7 @@ import com.filo.transfer.core.network.model.NetworkError
 import com.filo.transfer.core.network.model.TransferManifest
 import com.filo.transfer.core.network.model.TransferState
 import com.filo.transfer.core.network.protocol.ProtocolConstants
+import com.filo.transfer.core.network.security.handshake.InMemorySigningIdentity
 import com.filo.transfer.core.network.transport.TcpClientTransport
 import com.filo.transfer.core.network.transport.TcpServerTransport
 import kotlinx.coroutines.Dispatchers
@@ -88,8 +89,8 @@ class TransferReceiverEarlyEofTest {
         serverTransport = server
         val port = server.bind(0)
 
-        val sender = TransferSender(deviceName = "EofSender")
-        val receiver = TransferReceiver(deviceName = "EofReceiver")
+        val sender = TransferSender(deviceName = "EofSender", signingIdentity = InMemorySigningIdentity.generate())
+        val receiver = TransferReceiver(deviceName = "EofReceiver", signingIdentity = InMemorySigningIdentity.generate())
 
         val manifest = TransferManifest(
             transferId = UUID.randomUUID().toString(),
@@ -181,8 +182,8 @@ class TransferReceiverEarlyEofTest {
         serverTransport = server
         val port = server.bind(0)
 
-        val sender = TransferSender(deviceName = "EofAssertSender")
-        val receiver = TransferReceiver(deviceName = "EofAssertReceiver")
+        val sender = TransferSender(deviceName = "EofAssertSender", signingIdentity = InMemorySigningIdentity.generate())
+        val receiver = TransferReceiver(deviceName = "EofAssertReceiver", signingIdentity = InMemorySigningIdentity.generate())
 
         val manifest = TransferManifest(
             transferId = UUID.randomUUID().toString(),

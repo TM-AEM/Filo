@@ -10,6 +10,12 @@ import com.filo.transfer.core.network.protocol.FrameType
 import com.filo.transfer.core.network.protocol.ProtocolConstants
 import com.filo.transfer.core.network.protocol.ProtocolFrame
 import com.filo.transfer.core.network.security.FilenameValidator
+import com.filo.transfer.core.network.security.handshake.HandshakeError
+import com.filo.transfer.core.network.security.handshake.HandshakeFraming
+import com.filo.transfer.core.network.security.handshake.KeystoreSigningIdentity
+import com.filo.transfer.core.network.security.handshake.SecureHandshake
+import com.filo.transfer.core.network.security.handshake.SigningIdentity
+import com.filo.transfer.core.network.transport.SecureTransportState
 import com.filo.transfer.core.network.transport.SocketConnection
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -21,6 +27,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.security.GeneralSecurityException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -28,9 +35,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * Implements strict partial-file staging (.filo.part), atomic completion upon valid SHA-256
  * verification, resume negotiation, bounded memory streaming, and defense against path traversal.
+ *
+ * All application traffic runs over the Task 21G/21A secure transport: the responder
+ * completes the crypto [SecureHandshake] before accepting any manifest or data frame.
  */
 class TransferReceiver(
-    val deviceName: String = "FiloReceiver"
+    val deviceName: String = "FiloReceiver",
+    val signingIdentity: SigningIdentity = KeystoreSigningIdentity()
 ) {
     private val _state = MutableStateFlow<TransferState>(TransferState.Idle)
     val state: StateFlow<TransferState> = _state.asStateFlow()
@@ -195,30 +206,37 @@ class TransferReceiver(
     }
 
     private fun performHandshake(connection: SocketConnection) {
-        val helloFrame = connection.receiveFrame()
+        val helloFrame = connection.receiveHandshakeFrame()
         if (helloFrame.type != FrameType.HELLO) {
             throw NetworkError.HandshakeFailed("Expected HELLO frame, got: ${helloFrame.type}")
         }
-        val hello = FramePayloads.decodeHello(helloFrame.payload)
 
-        val versionMismatch = hello.version != ProtocolConstants.CURRENT_PROTOCOL_VERSION
-        val ackPayload = FramePayloads.encodeHelloAck(
-            version = ProtocolConstants.CURRENT_PROTOCOL_VERSION,
-            accepted = !versionMismatch,
-            deviceName = deviceName
-        )
-        connection.sendFrame(
-            ProtocolFrame(
-                type = FrameType.HELLO_ACK,
-                payload = ackPayload
-            )
-        )
+        try {
+            val initiatorMsg = HandshakeFraming.decodeHello(helloFrame.payload)
 
-        if (versionMismatch) {
-            throw NetworkError.ProtocolVersionMismatch(
-                expected = ProtocolConstants.CURRENT_PROTOCOL_VERSION.toInt(),
-                actual = hello.version.toInt()
+            val responderState = SecureHandshake.respond(signingIdentity, initiatorMsg)
+
+            connection.sendHandshakeFrame(
+                FrameType.HELLO_ACK,
+                HandshakeFraming.helloAckPayload(responderState.localMessage, responderState.fullTranscriptSignature)
             )
+
+            val finishFrame = connection.receiveHandshakeFrame()
+            if (finishFrame.type != FrameType.HANDSHAKE_FINISH) {
+                throw NetworkError.HandshakeFailed("Expected HANDSHAKE_FINISH frame, got: ${finishFrame.type}")
+            }
+
+            val session = SecureHandshake.completeAsResponder(
+                state = responderState,
+                peerMsg = initiatorMsg,
+                peerSig = HandshakeFraming.helloFinishSignature(finishFrame.payload)
+            )
+
+            connection.enterSecure(SecureTransportState.forResponder(session))
+        } catch (e: HandshakeError) {
+            throw NetworkError.HandshakeFailed("Responder handshake failed: ${e.category}", e)
+        } catch (e: GeneralSecurityException) {
+            throw NetworkError.HandshakeFailed("Cryptographic operation failed during handshake", e)
         }
     }
 
