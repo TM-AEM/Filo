@@ -10,6 +10,7 @@ import com.filo.transfer.core.network.protocol.FrameType
 import com.filo.transfer.core.network.protocol.ProtocolConstants
 import com.filo.transfer.core.network.protocol.ProtocolFrame
 import com.filo.transfer.core.network.security.FilenameValidator
+import com.filo.transfer.core.network.security.RelativePathValidator
 import com.filo.transfer.core.network.security.handshake.HandshakeError
 import com.filo.transfer.core.network.security.handshake.HandshakeFraming
 import com.filo.transfer.core.network.security.handshake.KeystoreSigningIdentity
@@ -186,8 +187,12 @@ class TransferReceiver(
             }
             val netError = if (e is NetworkError) e else NetworkError.IoError(e.message ?: "Receive error", e)
             transitionTo(TransferState.Failed(netError))
+            val partialFile = activePartialFile
             try {
-                activePartialFile?.delete()
+                val shouldKeep = shouldRetainResumablePartial(partialFile)
+                if (partialFile != null && !shouldKeep) {
+                    partialFile.delete()
+                }
             } catch (_: Throwable) {}
             activePartialFile = null
             try {
@@ -303,6 +308,15 @@ class TransferReceiver(
                 connection.sendFrame(ProtocolFrame(type = FrameType.MANIFEST_ACK, payload = rejectPayload))
                 throw NetworkError.UnsafeFilename(file.fileName)
             }
+            if (!RelativePathValidator.isSafe(file.relativePath)) {
+                val rejectPayload = FramePayloads.encodeManifestAck(
+                    transferId = manifest.transferId,
+                    accepted = false,
+                    reason = "Unsafe relative path detected: ${file.relativePath}"
+                )
+                connection.sendFrame(ProtocolFrame(type = FrameType.MANIFEST_ACK, payload = rejectPayload))
+                throw NetworkError.UnsafeRelativePath(file.relativePath)
+            }
         }
 
         val ackPayload = FramePayloads.encodeManifestAck(
@@ -336,7 +350,20 @@ class TransferReceiver(
         val header = FramePayloads.decodeFileHeader(headerFrame.payload)
 
         val safeName = FilenameValidator.sanitize(header.fileName)
-        val partialFile = File(destinationDir, "$safeName${ProtocolConstants.PARTIAL_FILE_SUFFIX}")
+
+        // Resolve the destination directory for this file inside the trusted destination
+        // root. A non-empty relative path (folder transfer) may create parent directories,
+        // but can never escape [destinationDir].
+        val validatedRelativePath = RelativePathValidator.validate(header.relativePath)
+            ?: throw NetworkError.UnsafeRelativePath(header.relativePath)
+        val targetDir = if (validatedRelativePath.isEmpty()) {
+            destinationDir
+        } else {
+            val targetFile = RelativePathValidator.resolveWithinRoot(destinationDir, validatedRelativePath)
+            targetFile.parentFile ?: destinationDir
+        }
+
+        val partialFile = File(targetDir, "$safeName${ProtocolConstants.PARTIAL_FILE_SUFFIX}")
 
         var resumeOffset = 0L
         if (allowResume && partialFile.exists()) {
@@ -350,8 +377,8 @@ class TransferReceiver(
         }
 
         val isResume = resumeOffset > 0
-        val resolvedName = resolveCollisionSafeFilename(destinationDir, safeName, isResume)
-        val finalFile = File(destinationDir, resolvedName)
+        val resolvedName = resolveCollisionSafeFilename(targetDir, safeName, isResume)
+        val finalFile = File(targetDir, resolvedName)
 
         val resumeReqPayload = FramePayloads.encodeResumeRequest(header.fileId, resumeOffset)
         connection.sendFrame(
@@ -490,6 +517,28 @@ class TransferReceiver(
         if (isCancelled.get()) {
             throw NetworkError.TransferCancelled("Transfer was cancelled by receiver")
         }
+    }
+
+    private fun shouldRetainResumablePartial(
+        partial: File?
+    ): Boolean {
+        if (partial == null || !partial.exists()) {
+            return false
+        }
+        if (partial.length() <= 0L) {
+            return false
+        }
+        val metaPath = File(partial.parent, "${partial.name}${ProtocolConstants.PARTIAL_FILE_SUFFIX}.meta")
+        if (!metaPath.exists()) {
+            return false
+        }
+        val lines = metaPath.readText().trim().split("\n")
+        if (lines.size < 2) {
+            return false
+        }
+        val transferId = lines[0]
+        val fileId = lines[1]
+        return transferId.isNotBlank() && fileId.isNotBlank()
     }
 
     private fun transitionTo(newState: TransferState) {

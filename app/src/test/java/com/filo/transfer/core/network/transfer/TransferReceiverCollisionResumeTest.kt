@@ -88,6 +88,9 @@ class TransferReceiverCollisionResumeTest {
             )
         )
 
+        val metadataFile = File(destDir, "data.bin${ProtocolConstants.PARTIAL_FILE_SUFFIX}.meta")
+        metadataFile.writeText("${manifest.transferId}\nd73\n")
+
         val receiverDeferred = async(Dispatchers.IO) {
             val serverConn = server.accept()
             receiver.receive(serverConn, destDir, allowResume = true)

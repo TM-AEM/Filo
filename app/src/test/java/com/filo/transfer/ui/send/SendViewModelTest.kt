@@ -25,7 +25,9 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
+import org.robolectric.fakes.BaseCursor
 import java.io.File
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -124,6 +126,7 @@ class SendViewModelTest {
         assertEquals(1, viewModel.selectedFiles.value.size)
 
         viewModel.clearFiles()
+        advanceUntilIdle()
         assertTrue(viewModel.selectedFiles.value.isEmpty())
         assertEquals(0L, viewModel.totalBytes.value)
     }
@@ -155,6 +158,183 @@ class SendViewModelTest {
         assertEquals(device, viewModel.selectedDevice.value)
         // Discovery is automatically stopped once transfer starts
         assertTrue(!fakeDiscoveryService.isDiscoveryRunning)
+    }
+
+    // --- Folder selection (folder transfer) ---
+
+    private val treeUri = Uri.parse("content://com.example.documents/tree/primary%3AFilo")
+
+    private class ColumnCursor(rows: List<Pair<String, Any?>>) : BaseCursor() {
+        private val values = rows.toMap()
+        private var position = -1
+
+        override fun getCount(): Int = 1
+
+        override fun moveToFirst(): Boolean {
+            position = 0
+            return true
+        }
+
+        override fun moveToNext(): Boolean {
+            position++
+            return position < 1
+        }
+
+        override fun getColumnIndex(columnName: String): Int = values.keys.indexOf(columnName)
+
+        override fun getString(column: Int): String? {
+            val value = values.values.elementAtOrNull(column) ?: return null
+            return value as? String
+        }
+
+        override fun getLong(column: Int): Long {
+            val value = values.values.elementAtOrNull(column) ?: return 0L
+            return (value as? Long) ?: 0L
+        }
+
+        override fun isNull(column: Int): Boolean {
+            return values.values.elementAtOrNull(column) == null
+        }
+
+        override fun close() {}
+    }
+
+    private fun treeRow(documentId: String, displayName: String, isDir: Boolean) = mapOf(
+        android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID to documentId,
+        android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME to displayName,
+        android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE to
+            if (isDir) android.provider.DocumentsContract.Document.MIME_TYPE_DIR else "application/octet-stream"
+    )
+
+    private fun registerTreeChildren(parentDocumentId: String, vararg rows: Map<String, String?>) {
+        val columns = listOf(
+            android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE
+        )
+        val childrenUri = android.provider.DocumentsContract
+            .buildChildDocumentsUriUsingTree(treeUri, parentDocumentId)
+        val cursor = object : BaseCursor() {
+            private var position = -1
+            override fun getCount(): Int = rows.size
+            override fun moveToNext(): Boolean {
+                position++
+                return position < rows.size
+            }
+            override fun getColumnIndex(columnName: String): Int = columns.indexOf(columnName)
+            override fun getString(column: Int): String? = rows[position][columns[column]]
+            override fun close() {}
+        }
+        Shadows.shadowOf(context.contentResolver).setCursor(childrenUri, cursor)
+    }
+
+    private fun registerDocumentMetadata(documentId: String, displayName: String, size: Long) {
+        val docUri = android.provider.DocumentsContract
+            .buildDocumentUriUsingTree(treeUri, documentId)
+        val cursor = ColumnCursor(
+            listOf(
+                android.provider.OpenableColumns.DISPLAY_NAME to displayName,
+                android.provider.OpenableColumns.SIZE to size
+            )
+        )
+        Shadows.shadowOf(context.contentResolver).setCursor(docUri, cursor)
+    }
+
+    @Test
+    fun `adding a folder tree uri expands into nested files with relative paths`() = runTest {
+        registerTreeChildren(
+            "primary:Filo",
+            treeRow("primary:Filo/docs", "docs", isDir = true),
+            treeRow("primary:Filo/readme.md", "readme.md", isDir = false)
+        )
+        registerTreeChildren(
+            "primary:Filo/docs",
+            treeRow("primary:Filo/docs/report.pdf", "report.pdf", isDir = false)
+        )
+        registerDocumentMetadata("primary:Filo/readme.md", "readme.md", 12L)
+        registerDocumentMetadata("primary:Filo/docs/report.pdf", "report.pdf", 34L)
+
+        viewModel.addUris(context, listOf(treeUri))
+        advanceUntilIdle()
+
+        val files = viewModel.selectedFiles.value
+        assertEquals(2, files.size)
+
+        val byPath = files.associateBy { it.relativePath }
+        assertEquals(setOf("readme.md", "docs/report.pdf"), byPath.keys)
+        assertEquals("readme.md", byPath["readme.md"]?.name)
+        assertEquals(12L, byPath["readme.md"]?.size)
+        assertEquals("report.pdf", byPath["docs/report.pdf"]?.name)
+        assertEquals(34L, byPath["docs/report.pdf"]?.size)
+        assertEquals(46L, viewModel.totalBytes.value)
+    }
+
+    @Test
+    fun `individual files keep empty relative paths`() = runTest {
+        val file = File(context.cacheDir, "plain.txt").apply { writeText("hello") }
+
+        viewModel.addUris(context, listOf(Uri.fromFile(file)))
+        advanceUntilIdle()
+
+        val files = viewModel.selectedFiles.value
+        assertEquals(1, files.size)
+        assertEquals("", files[0].relativePath)
+    }
+
+    @Test
+    fun `folder and individual files can be mixed`() = runTest {
+        registerTreeChildren(
+            "primary:Filo",
+            treeRow("primary:Filo/notes.txt", "notes.txt", isDir = false)
+        )
+        registerDocumentMetadata("primary:Filo/notes.txt", "notes.txt", 5L)
+
+        val plain = File(context.cacheDir, "plain.bin").apply { writeText("xy") }
+
+        viewModel.addUris(context, listOf(treeUri, Uri.fromFile(plain)))
+        advanceUntilIdle()
+
+        val byPath = viewModel.selectedFiles.value.associateBy { it.relativePath }
+        assertEquals(setOf("notes.txt", ""), byPath.keys)
+    }
+
+    @Test
+    fun `unreadable folder contributes no files`() = runTest {
+        // No cursor registered for the tree children: enumeration yields nothing.
+
+        viewModel.addUris(context, listOf(treeUri))
+        advanceUntilIdle()
+
+        assertTrue(viewModel.selectedFiles.value.isEmpty())
+        assertEquals(0L, viewModel.totalBytes.value)
+    }
+
+    @Test
+    fun `startTransfer carries relative paths into the service command`() = runTest {
+        registerTreeChildren(
+            "primary:Filo",
+            treeRow("primary:Filo/a.txt", "a.txt", isDir = false)
+        )
+        registerDocumentMetadata("primary:Filo/a.txt", "a.txt", 3L)
+        viewModel.addUris(context, listOf(treeUri))
+        advanceUntilIdle()
+
+        val device = DiscoveryDevice(
+            id = "dev-1",
+            serviceName = "Filo-Receiver-Test",
+            host = "192.168.1.150",
+            port = 50222
+        )
+        viewModel.startTransfer(context, device)
+        advanceUntilIdle()
+
+        val app = context.applicationContext as android.app.Application
+        val startedIntent = Shadows.shadowOf(app).nextStartedService
+        assertNotNull(startedIntent)
+        val relativePaths = startedIntent!!.getStringArrayListExtra(
+            com.filo.transfer.core.service.TransferCommand.EXTRA_RELATIVE_PATHS
+        )
+        assertEquals(listOf("a.txt"), relativePaths)
     }
 
     private class FakeDiscoveryService : DiscoveryService {

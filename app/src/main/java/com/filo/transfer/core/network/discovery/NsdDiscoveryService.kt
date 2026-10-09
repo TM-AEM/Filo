@@ -60,6 +60,9 @@ class NsdDiscoveryService(
     private var activeDiscoveryListener: NsdManager.DiscoveryListener? = null
     private var isDiscoveryStarting = false
 
+    private var advertisingGeneration: Int = 0
+    private var discoveryGeneration: Int = 0
+
     private var resolveChannel = Channel<NsdServiceInfo>(Channel.UNLIMITED)
     private var resolveJob: Job? = null
 
@@ -82,7 +85,7 @@ class NsdDiscoveryService(
                 return
             }
             isAdvertisingStarting = true
-            _advertisingState.value = AdvertisingState.Starting
+            advertisingGeneration++
         }
 
         val baseName = customServiceName?.trim()?.ifBlank { null } ?: generateDefaultServiceName()
@@ -93,8 +96,11 @@ class NsdDiscoveryService(
             this.port = port
         }
 
+        val advertisingStartGeneration = advertisingGeneration
+
         val listener = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(registeredInfo: NsdServiceInfo) {
+                if (advertisingStartGeneration != advertisingGeneration) return
                 synchronized(advertisingLock) {
                     isAdvertisingStarting = false
                     registeredServiceName = registeredInfo.serviceName
@@ -107,6 +113,7 @@ class NsdDiscoveryService(
             }
 
             override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                if (advertisingStartGeneration != advertisingGeneration) return
                 synchronized(advertisingLock) {
                     isAdvertisingStarting = false
                     activeRegistrationListener = null
@@ -118,6 +125,7 @@ class NsdDiscoveryService(
             }
 
             override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) {
+                if (advertisingStartGeneration != advertisingGeneration) return
                 synchronized(advertisingLock) {
                     isAdvertisingStarting = false
                     activeRegistrationListener = null
@@ -127,6 +135,7 @@ class NsdDiscoveryService(
             }
 
             override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                if (advertisingStartGeneration != advertisingGeneration) return
                 synchronized(advertisingLock) {
                     isAdvertisingStarting = false
                     activeRegistrationListener = null
@@ -160,6 +169,7 @@ class NsdDiscoveryService(
     }
 
     override fun stopAdvertising() {
+        advertisingGeneration++
         val listenerToUnregister = synchronized(advertisingLock) {
             val listener = activeRegistrationListener
             activeRegistrationListener = null
@@ -195,8 +205,11 @@ class NsdDiscoveryService(
 
         ensureResolveWorkerRunning()
 
+        val discoveryStartGeneration = discoveryGeneration
+
         val listener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(regType: String) {
+                if (discoveryStartGeneration != discoveryGeneration) return
                 synchronized(discoveryLock) {
                     isDiscoveryStarting = false
                     _discoveryState.value = DiscoveryState.Discovering
@@ -204,6 +217,7 @@ class NsdDiscoveryService(
             }
 
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                if (discoveryStartGeneration != discoveryGeneration) return
                 synchronized(discoveryLock) {
                     isDiscoveryStarting = false
                     activeDiscoveryListener = null
@@ -214,14 +228,17 @@ class NsdDiscoveryService(
             }
 
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
+                if (discoveryStartGeneration != discoveryGeneration) return
                 handleServiceFound(serviceInfo)
             }
 
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {
+                if (discoveryStartGeneration != discoveryGeneration) return
                 handleServiceLost(serviceInfo)
             }
 
             override fun onDiscoveryStopped(serviceType: String) {
+                if (discoveryStartGeneration != discoveryGeneration) return
                 synchronized(discoveryLock) {
                     isDiscoveryStarting = false
                     activeDiscoveryListener = null
@@ -230,6 +247,7 @@ class NsdDiscoveryService(
             }
 
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
+                if (discoveryStartGeneration != discoveryGeneration) return
                 synchronized(discoveryLock) {
                     isDiscoveryStarting = false
                     activeDiscoveryListener = null
@@ -261,6 +279,7 @@ class NsdDiscoveryService(
     }
 
     override fun stopDiscovery() {
+        discoveryGeneration++
         val listenerToStop = synchronized(discoveryLock) {
             val listener = activeDiscoveryListener
             activeDiscoveryListener = null

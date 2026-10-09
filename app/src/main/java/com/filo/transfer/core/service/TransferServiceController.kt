@@ -21,6 +21,9 @@ object TransferServiceController {
 
     /**
      * Starts a background file sending session using file paths or content URIs.
+     *
+     * @param relativePaths optional per-file relative destination paths (folder transfer),
+     * aligned with [filePaths] by index; `""` or omitted means the legacy flat case.
      */
     fun startSend(
         context: Context,
@@ -28,14 +31,16 @@ object TransferServiceController {
         targetHost: String,
         targetPort: Int = ProtocolConstants.DEFAULT_PORT,
         filePaths: List<String>,
-        deviceName: String = "FiloSender"
+        deviceName: String = "FiloSender",
+        relativePaths: List<String> = emptyList()
     ) {
         val command = TransferCommand.StartSend(
             transferId = transferId,
             targetHost = targetHost,
             targetPort = targetPort,
             filePaths = filePaths,
-            deviceName = deviceName
+            deviceName = deviceName,
+            relativePaths = relativePaths
         )
         val intent = TransferCommand.toIntent(context, command)
         ContextCompat.startForegroundService(context, intent)
@@ -43,6 +48,9 @@ object TransferServiceController {
 
     /**
      * Starts a background file sending session directly from a list of SAF/MediaStore [android.net.Uri]s.
+     *
+     * @param relativePaths optional per-URI relative destination paths (folder transfer),
+     * aligned with [uris] by index; `""` or omitted means the legacy flat case.
      */
     fun startSendUris(
         context: Context,
@@ -50,7 +58,8 @@ object TransferServiceController {
         targetHost: String,
         targetPort: Int = ProtocolConstants.DEFAULT_PORT,
         uris: List<android.net.Uri>,
-        deviceName: String = "FiloSender"
+        deviceName: String = "FiloSender",
+        relativePaths: List<String> = emptyList()
     ) {
         startSend(
             context = context,
@@ -58,7 +67,8 @@ object TransferServiceController {
             targetHost = targetHost,
             targetPort = targetPort,
             filePaths = uris.map { it.toString() },
-            deviceName = deviceName
+            deviceName = deviceName,
+            relativePaths = relativePaths
         )
     }
 

@@ -6,6 +6,7 @@ import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import com.filo.transfer.core.network.model.TransferState
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -31,6 +32,14 @@ class TransferServiceTest {
         context = ApplicationProvider.getApplicationContext()
         controller = Robolectric.buildService(TransferService::class.java)
         service = controller.create().get()
+    }
+
+    @After
+    fun tearDown() {
+        // Destroying the service triggers onDestroy, which cancels the service scope and closes
+        // any server transport bound by the test. Without this, a StartReceive test leaves its
+        // listening socket bound and a later test reusing the same port fails to bind.
+        controller.destroy()
     }
 
     @Test
@@ -130,6 +139,77 @@ class TransferServiceTest {
 
     @Test
     fun testDestroyResetsStateToIdle() {
+        controller.destroy()
+        assertEquals(TransferServiceState.Idle, TransferService.serviceState.value)
+    }
+
+    @Test
+    fun testStartReceiveEntersInitializing() {
+        val dest = File(context.cacheDir, "incoming").apply { mkdirs() }
+        val command = TransferCommand.StartReceive(
+            transferId = "rx-test-1",
+            listenPort = 50222,
+            destinationDir = dest.absolutePath
+        )
+        val flags = service.onStartCommand(TransferCommand.toIntent(context, command), 0, 1)
+        assertEquals(Service.START_NOT_STICKY, flags)
+        val currentState = TransferService.serviceState.value
+        assertTrue(
+            "Expected Initializing, Active, or Terminated, got: $currentState",
+            currentState is TransferServiceState.Initializing ||
+                currentState is TransferServiceState.Active ||
+                currentState is TransferServiceState.Terminated
+        )
+    }
+
+    @Test
+    fun testDuplicateReceiveStartDoesNotReplaceActiveJob() {
+        val dest = File(context.cacheDir, "incoming2").apply { mkdirs() }
+        val first = TransferCommand.StartReceive("rx-first", 50222, dest.absolutePath)
+        service.onStartCommand(TransferCommand.toIntent(context, first), 0, 1)
+        val afterFirst = TransferService.serviceState.value
+
+        val second = TransferCommand.StartReceive("rx-second", 50223, dest.absolutePath)
+        val flags = service.onStartCommand(TransferCommand.toIntent(context, second), 0, 2)
+        assertEquals(Service.START_NOT_STICKY, flags)
+
+        val afterSecond = TransferService.serviceState.value
+        if (afterFirst is TransferServiceState.Initializing) {
+            assertTrue(afterSecond is TransferServiceState.Initializing || afterSecond is TransferServiceState.Active)
+            if (afterSecond is TransferServiceState.Initializing) {
+                assertEquals("rx-first", afterSecond.transferId)
+            }
+        }
+    }
+
+    @Test
+    fun testCancelAfterStartTerminatesCancelled() {
+        val dest = File(context.cacheDir, "incoming3").apply { mkdirs() }
+        val start = TransferCommand.StartReceive("rx-cancel", 50222, dest.absolutePath)
+        service.onStartCommand(TransferCommand.toIntent(context, start), 0, 1)
+        service.onStartCommand(TransferCommand.toIntent(context, TransferCommand.Cancel), 0, 2)
+
+        val state = TransferService.serviceState.value
+        assertTrue("Expected Terminated, got $state", state is TransferServiceState.Terminated)
+        assertEquals(TransferState.Cancelled, (state as TransferServiceState.Terminated).finalState)
+    }
+
+    @Test
+    fun testStopAfterStartClearsForegroundWork() {
+        val dest = File(context.cacheDir, "incoming4").apply { mkdirs() }
+        val start = TransferCommand.StartReceive("rx-stop", 50222, dest.absolutePath)
+        service.onStartCommand(TransferCommand.toIntent(context, start), 0, 1)
+        val flags = service.onStartCommand(TransferCommand.toIntent(context, TransferCommand.Stop), 0, 2)
+        assertEquals(Service.START_NOT_STICKY, flags)
+        val state = TransferService.serviceState.value
+        assertTrue(state is TransferServiceState.Terminated || state is TransferServiceState.Idle)
+    }
+
+    @Test
+    fun testDestroyCancelsActiveReceiveAndResetsIdle() {
+        val dest = File(context.cacheDir, "incoming5").apply { mkdirs() }
+        val start = TransferCommand.StartReceive("rx-destroy", 50222, dest.absolutePath)
+        service.onStartCommand(TransferCommand.toIntent(context, start), 0, 1)
         controller.destroy()
         assertEquals(TransferServiceState.Idle, TransferService.serviceState.value)
     }

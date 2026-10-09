@@ -5,13 +5,17 @@ import java.text.DecimalFormat
 
 /**
  * Lightweight, immutable UI presentation model for a user-selected file item.
+ *
+ * @param relativePath path relative to the picked folder root for folder transfers, e.g.
+ * `"subdir/report.pdf"`; empty for individually picked files (legacy flat case).
  */
 data class SelectedFileItem(
     val uri: Uri,
     val name: String,
     val size: Long,
     val mimeType: String,
-    val formattedSize: String
+    val formattedSize: String,
+    val relativePath: String = ""
 ) {
     companion object {
         /**

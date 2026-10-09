@@ -48,6 +48,74 @@ class TransferCommandTest {
     }
 
     @Test
+    fun testStartSendCommandWithRelativePathsIntentRoundTrip() {
+        val original = TransferCommand.StartSend(
+            transferId = "tx-folder",
+            targetHost = "192.168.1.50",
+            targetPort = 50222,
+            filePaths = listOf(
+                "content://com.android.externalstorage.documents/tree/abc/document/1",
+                "content://com.android.externalstorage.documents/tree/abc/document/2"
+            ),
+            deviceName = "AlicePhone",
+            relativePaths = listOf("docs/report.pdf", "photos/img.png")
+        )
+
+        val intent = TransferCommand.toIntent(context, original)
+        assertEquals(TransferCommand.ACTION_START_SEND, intent.action)
+
+        val parsed = TransferCommand.fromIntent(intent) as? TransferCommand.StartSend
+        assertNotNull(parsed)
+        assertEquals(original.filePaths, parsed!!.filePaths)
+        assertEquals(original.relativePaths, parsed.relativePaths)
+    }
+
+    @Test
+    fun testStartSendCommandDefaultsToEmptyRelativePaths() {
+        val original = TransferCommand.StartSend(
+            transferId = "tx-plain",
+            targetHost = "192.168.1.50",
+            filePaths = listOf("a.txt")
+        )
+
+        assertTrue(original.relativePaths.isEmpty())
+
+        val intent = TransferCommand.toIntent(context, original)
+        val parsed = TransferCommand.fromIntent(intent) as? TransferCommand.StartSend
+        assertNotNull(parsed)
+        assertTrue(parsed!!.relativePaths.isEmpty())
+    }
+
+    @Test
+    fun testStartSendRejectsMisalignedRelativePaths() {
+        assertThrows(IllegalArgumentException::class.java) {
+            TransferCommand.StartSend(
+                transferId = "tx-bad",
+                targetHost = "127.0.0.1",
+                filePaths = listOf("a.txt"),
+                relativePaths = listOf("a.txt", "b.txt")
+            )
+        }
+    }
+
+    @Test
+    fun testStartSendIntentWithoutRelativePathsDecodesToEmpty() {
+        // An intent written by a caller that never set EXTRA_RELATIVE_PATHS
+        val original = TransferCommand.StartSend(
+            transferId = "tx-legacy",
+            targetHost = "192.168.1.50",
+            filePaths = listOf("a.txt", "b.txt")
+        )
+
+        val intent = TransferCommand.toIntent(context, original)
+        intent.removeExtra(TransferCommand.EXTRA_RELATIVE_PATHS)
+
+        val parsed = TransferCommand.fromIntent(intent) as? TransferCommand.StartSend
+        assertNotNull(parsed)
+        assertTrue(parsed!!.relativePaths.isEmpty())
+    }
+
+    @Test
     fun testStartReceiveCommandIntentRoundTrip() {
         val original = TransferCommand.StartReceive(
             transferId = "rx-456",

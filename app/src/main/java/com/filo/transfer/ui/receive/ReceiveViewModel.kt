@@ -2,7 +2,6 @@ package com.filo.transfer.ui.receive
 
 import android.content.Context
 import android.os.Build
-import android.os.Environment
 import androidx.lifecycle.ViewModel
 import com.filo.transfer.core.network.protocol.ProtocolConstants
 import com.filo.transfer.core.service.TransferServiceController
@@ -60,17 +59,10 @@ class ReceiveViewModel : ViewModel() {
     }
 
     private fun getDownloadDestination(context: Context): String {
-        val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        val filoDir = File(downloads, "Filo")
-        if (!filoDir.exists()) {
-            filoDir.mkdirs()
+        val staging = File(context.filesDir, "filo-incoming")
+        if (!staging.exists()) {
+            staging.mkdirs()
         }
-        return if (filoDir.canWrite()) {
-            filoDir.absolutePath
-        } else {
-            val appFiles = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
-            val fallback = File(appFiles, "Filo").apply { mkdirs() }
-            fallback.absolutePath
-        }
+        return staging.absolutePath
     }
 }

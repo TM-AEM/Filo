@@ -29,6 +29,7 @@ class RetryPolicy(
         if (throwable is NetworkError.InvalidFrame) return false
         if (throwable is NetworkError.OversizedPayload) return false
         if (throwable is NetworkError.UnsafeFilename) return false
+        if (throwable is NetworkError.UnsafeRelativePath) return false
         if (throwable is NetworkError.InvalidOffset) return false
 
         // Transient exceptions eligible for retry

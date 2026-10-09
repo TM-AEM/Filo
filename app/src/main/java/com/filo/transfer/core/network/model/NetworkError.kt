@@ -45,6 +45,12 @@ sealed class NetworkError(
         override val cause: Throwable? = null
     ) : NetworkError(message, cause)
 
+    data class UnsafeRelativePath(
+        val relativePath: String,
+        override val message: String = "Rejected potentially unsafe relative path: '$relativePath'",
+        override val cause: Throwable? = null
+    ) : NetworkError(message, cause)
+
     data class InvalidOffset(
         val offset: Long,
         val fileSize: Long,

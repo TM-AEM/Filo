@@ -19,13 +19,17 @@ sealed interface TransferCommand {
         val targetHost: String,
         val targetPort: Int = ProtocolConstants.DEFAULT_PORT,
         val filePaths: List<String>,
-        val deviceName: String = "FiloSender"
+        val deviceName: String = "FiloSender",
+        val relativePaths: List<String> = emptyList()
     ) : TransferCommand {
         init {
             require(transferId.isNotBlank()) { "transferId must not be blank" }
             require(targetHost.isNotBlank()) { "targetHost must not be blank" }
             require(targetPort in 1..65535) { "targetPort must be between 1 and 65535" }
             require(filePaths.isNotEmpty()) { "filePaths must not be empty" }
+            require(relativePaths.size <= filePaths.size) {
+                "relativePaths must align with filePaths"
+            }
         }
     }
 
@@ -78,6 +82,7 @@ sealed interface TransferCommand {
         const val EXTRA_TARGET_HOST = "com.filo.transfer.extra.TARGET_HOST"
         const val EXTRA_PORT = "com.filo.transfer.extra.PORT"
         const val EXTRA_FILE_PATHS = "com.filo.transfer.extra.FILE_PATHS"
+        const val EXTRA_RELATIVE_PATHS = "com.filo.transfer.extra.RELATIVE_PATHS"
         const val EXTRA_DESTINATION_DIR = "com.filo.transfer.extra.DESTINATION_DIR"
         const val EXTRA_DEVICE_NAME = "com.filo.transfer.extra.DEVICE_NAME"
 
@@ -93,6 +98,7 @@ sealed interface TransferCommand {
                     intent.putExtra(EXTRA_TARGET_HOST, command.targetHost)
                     intent.putExtra(EXTRA_PORT, command.targetPort)
                     intent.putStringArrayListExtra(EXTRA_FILE_PATHS, ArrayList(command.filePaths))
+                    intent.putStringArrayListExtra(EXTRA_RELATIVE_PATHS, ArrayList(command.relativePaths))
                     intent.putExtra(EXTRA_DEVICE_NAME, command.deviceName)
 
                     val contentUris = command.filePaths.mapNotNull {
@@ -138,9 +144,10 @@ sealed interface TransferCommand {
                     val targetHost = intent.getStringExtra(EXTRA_TARGET_HOST) ?: return null
                     val port = intent.getIntExtra(EXTRA_PORT, ProtocolConstants.DEFAULT_PORT)
                     val filePaths = intent.getStringArrayListExtra(EXTRA_FILE_PATHS) ?: return null
+                    val relativePaths = intent.getStringArrayListExtra(EXTRA_RELATIVE_PATHS) ?: emptyList()
                     val deviceName = intent.getStringExtra(EXTRA_DEVICE_NAME) ?: "FiloSender"
                     try {
-                        StartSend(transferId, targetHost, port, filePaths, deviceName)
+                        StartSend(transferId, targetHost, port, filePaths, deviceName, relativePaths)
                     } catch (_: IllegalArgumentException) {
                         null
                     }

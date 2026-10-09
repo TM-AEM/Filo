@@ -115,10 +115,12 @@ class TransferService : Service() {
         activeJob = serviceScope.launch(Dispatchers.IO) {
             val stateJob = launch {
                 sender.state.collect { state ->
-                    _serviceState.value = TransferServiceState.Active(
-                        transferId = command.transferId,
-                        isSender = true,
-                        networkState = state
+                    publishAsyncState(
+                        TransferServiceState.Active(
+                            transferId = command.transferId,
+                            isSender = true,
+                            networkState = state
+                        )
                     )
                     notificationManager.updateNotification(isSender = true, state = state)
                 }
@@ -137,6 +139,7 @@ class TransferService : Service() {
 
                 command.filePaths.forEachIndexed { idx, pathOrUri ->
                     val fileId = "file-$idx"
+                    val relativePath = command.relativePaths.getOrNull(idx).orEmpty()
                     if (pathOrUri.startsWith("content://") || pathOrUri.startsWith("file://")) {
                         val uri = Uri.parse(pathOrUri)
                         val metaResult = resolver.resolve(uri)
@@ -147,7 +150,8 @@ class TransferService : Service() {
                                 fileName = fileMeta.displayName,
                                 size = if (fileMeta.size >= 0L) fileMeta.size else 0L,
                                 mimeType = fileMeta.mimeType,
-                                lastModified = fileMeta.lastModified
+                                lastModified = fileMeta.lastModified,
+                                relativePath = relativePath
                             )
                             manifestItems.add(item)
                             sources[fileId] = ContentUriFileSource(
@@ -168,7 +172,8 @@ class TransferService : Service() {
                                 fileName = file.name,
                                 size = file.length(),
                                 mimeType = "application/octet-stream",
-                                lastModified = file.lastModified()
+                                lastModified = file.lastModified(),
+                                relativePath = relativePath
                             )
                             manifestItems.add(item)
                             sources[fileId] = LocalFileSource(file, fileId)
@@ -216,10 +221,12 @@ class TransferService : Service() {
         activeJob = serviceScope.launch(Dispatchers.IO) {
             val stateJob = launch {
                 receiver.state.collect { state ->
-                    _serviceState.value = TransferServiceState.Active(
-                        transferId = command.transferId,
-                        isSender = false,
-                        networkState = state
+                    publishAsyncState(
+                        TransferServiceState.Active(
+                            transferId = command.transferId,
+                            isSender = false,
+                            networkState = state
+                        )
                     )
                     notificationManager.updateNotification(isSender = false, state = state)
                 }
@@ -232,10 +239,12 @@ class TransferService : Service() {
                 server = TcpServerTransport()
                 currentServerTransport = server
                 val actualBoundPort = server.bind(command.listenPort)
-                _serviceState.value = TransferServiceState.Initializing(
-                    transferId = command.transferId,
-                    isSender = false,
-                    boundPort = actualBoundPort
+                publishAsyncState(
+                    TransferServiceState.Initializing(
+                        transferId = command.transferId,
+                        isSender = false,
+                        boundPort = actualBoundPort
+                    )
                 )
 
                 try {
@@ -304,6 +313,7 @@ class TransferService : Service() {
 
     private fun handleStop() {
         cleanupActiveTransfer(cancelled = true)
+        _serviceState.value = TransferServiceState.Idle
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         notificationManager.cancelNotification()
         stopSelf()
@@ -355,6 +365,21 @@ class TransferService : Service() {
             val netError = if (ex is NetworkError) ex else NetworkError.IoError(ex?.message ?: "Transfer failed", ex)
             handleFailed(transferId, isSender, netError)
         }
+    }
+
+    /**
+     * Publishes a service-state update emitted asynchronously by a transfer coroutine.
+     *
+     * [handleCancel], [handleStop] and failure handlers set the final state synchronously on the
+     * calling thread, but the transfer's state collector runs on [Dispatchers.IO] and can emit a
+     * trailing [TransferServiceState.Active] or [TransferServiceState.Initializing] afterwards.
+     * Letting such a stale emission overwrite a state already reached via cancellation, failure,
+     * stop or destroy would make the observable post-lifecycle state non-deterministic.
+     */
+    private fun publishAsyncState(newState: TransferServiceState) {
+        val current = _serviceState.value
+        if (current is TransferServiceState.Terminated || current is TransferServiceState.Idle) return
+        _serviceState.value = newState
     }
 
     private fun handleCancelled(transferId: String, isSender: Boolean) {

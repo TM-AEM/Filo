@@ -263,7 +263,8 @@ class TransferSender(
             fileId = fileItem.fileId,
             fileName = fileItem.fileName,
             fileSize = fileItem.size,
-            mimeType = fileItem.mimeType
+            mimeType = fileItem.mimeType,
+            relativePath = fileItem.relativePath
         )
         connection.sendFrame(
             ProtocolFrame(

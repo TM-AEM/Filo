@@ -4,6 +4,7 @@ import com.filo.transfer.core.network.model.ManifestFileItem
 import com.filo.transfer.core.network.model.NetworkError
 import com.filo.transfer.core.network.model.TransferManifest
 import com.filo.transfer.core.network.security.FilenameValidator
+import com.filo.transfer.core.network.security.RelativePathValidator
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -93,6 +94,8 @@ object FramePayloads {
                 dos.writeLong(file.size)
                 dos.writeUTF(file.mimeType.take(255))
                 dos.writeLong(file.lastModified)
+                // Optional trailing field: legacy peers simply stop reading here.
+                writeOptional(dos, file.relativePath.take(RelativePathValidator.MAX_PATH_LENGTH))
             }
         }
         return bout.toByteArray()
@@ -122,7 +125,13 @@ object FramePayloads {
                         throw NetworkError.UnsafeFilename(fileName)
                     }
 
-                    files.add(ManifestFileItem(fileId, fileName, size, mimeType, lastModified))
+                    // Optional trailing field: absent when the payload ends here (legacy peers).
+                    val relativePath = readOptional(dis)
+                    if (!RelativePathValidator.isSafe(relativePath)) {
+                        throw NetworkError.UnsafeRelativePath(relativePath)
+                    }
+
+                    files.add(ManifestFileItem(fileId, fileName, size, mimeType, lastModified, relativePath))
                 }
                 return TransferManifest(transferId, senderDeviceName, files)
             }
@@ -170,7 +179,8 @@ object FramePayloads {
         val fileId: String,
         val fileName: String,
         val fileSize: Long,
-        val mimeType: String
+        val mimeType: String,
+        val relativePath: String = ""
     )
 
     fun encodeFileHeader(
@@ -179,7 +189,8 @@ object FramePayloads {
         fileId: String,
         fileName: String,
         fileSize: Long,
-        mimeType: String
+        mimeType: String,
+        relativePath: String = ""
     ): ByteArray {
         val bout = ByteArrayOutputStream()
         DataOutputStream(bout).use { dos ->
@@ -190,6 +201,8 @@ object FramePayloads {
             dos.writeUTF(safeName.take(255))
             dos.writeLong(fileSize)
             dos.writeUTF(mimeType.take(255))
+            // Optional trailing field: legacy peers simply stop reading here.
+            writeOptional(dos, relativePath.take(RelativePathValidator.MAX_PATH_LENGTH))
         }
         return bout.toByteArray()
     }
@@ -211,7 +224,13 @@ object FramePayloads {
                     throw NetworkError.UnsafeFilename(fileName)
                 }
 
-                return FileHeaderPayload(fileIndex, totalFiles, fileId, fileName, fileSize, mimeType)
+                // Optional trailing field: absent when the payload ends here (legacy peers).
+                val relativePath = readOptional(dis)
+                if (!RelativePathValidator.isSafe(relativePath)) {
+                    throw NetworkError.UnsafeRelativePath(relativePath)
+                }
+
+                return FileHeaderPayload(fileIndex, totalFiles, fileId, fileName, fileSize, mimeType, relativePath)
             }
         } catch (e: NetworkError) {
             throw e
@@ -379,5 +398,24 @@ object FramePayloads {
         } catch (e: Exception) {
             ""
         }
+    }
+
+    // --- BACKWARD-COMPATIBLE OPTIONAL FIELDS ---
+
+    /**
+     * Writes [value] as a trailing optional UTF field. A `null` or blank value is encoded
+     * as an empty string so peers can distinguish "not present" from "present but empty".
+     */
+    private fun writeOptional(dos: DataOutputStream, value: String?) {
+        dos.writeUTF(value ?: "")
+    }
+
+    /**
+     * Reads a trailing optional UTF field, returning `""` when the payload has no bytes
+     * left (i.e. a legacy peer that never wrote the field).
+     */
+    private fun readOptional(dis: DataInputStream): String {
+        if (dis.available() <= 0) return ""
+        return dis.readUTF()
     }
 }

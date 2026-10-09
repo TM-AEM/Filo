@@ -12,6 +12,7 @@ import com.filo.transfer.core.network.discovery.NsdDiscoveryService
 import com.filo.transfer.core.service.TransferServiceController
 import com.filo.transfer.core.storage.model.StorageResult
 import com.filo.transfer.core.storage.provider.FileMetadataResolver
+import com.filo.transfer.core.storage.provider.FolderEnumerator
 import com.filo.transfer.ui.model.SelectedFileItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,9 +57,13 @@ class SendViewModel(
     val selectedDevice: StateFlow<DiscoveryDevice?> = _selectedDevice.asStateFlow()
 
     private var activeDiscoveryService: DiscoveryService? = null
+    private var isDiscoveryRunning = false
 
     /**
      * Resolves SAF / MediaStore URIs into [SelectedFileItem]s on an IO thread.
+     *
+     * A folder picker URI (SAF tree Uri) is recursively expanded into its leaf files, each
+     * carrying the path relative to the folder root so the receiver can rebuild the hierarchy.
      */
     fun addUris(context: Context, uris: List<Uri>) {
         if (uris.isEmpty()) return
@@ -66,6 +71,7 @@ class SendViewModel(
 
         viewModelScope.launch(ioDispatcher) {
             val resolver = FileMetadataResolver(applicationContext.contentResolver)
+            val folderEnumerator = FolderEnumerator(applicationContext.contentResolver)
             val currentUris = _selectedFiles.value.map { it.uri }.toSet()
             val newItems = mutableListOf<SelectedFileItem>()
 
@@ -82,20 +88,23 @@ class SendViewModel(
                     // Normal for single-grant or non-persistable content URIs
                 }
 
-                val metaResult = resolver.resolve(uri)
-                if (metaResult is StorageResult.Success) {
-                    val file = metaResult.data
-                    val size = if (file.size >= 0) file.size else 0L
-                    newItems.add(
-                        SelectedFileItem(
-                            uri = uri,
-                            name = file.displayName,
-                            size = size,
-                            mimeType = file.mimeType,
-                            formattedSize = SelectedFileItem.formatFileSize(size)
-                        )
-                    )
+                if (android.provider.DocumentsContract.isTreeUri(uri)) {
+                    // Folder selection: expand the tree into its leaf files.
+                    when (val enumResult = folderEnumerator.enumerate(uri)) {
+                        is StorageResult.Success -> {
+                            for (leaf in enumResult.data) {
+                                if (currentUris.contains(leaf.uri)) continue
+                                addLeafFile(resolver, leaf.uri, leaf.relativePath, newItems)
+                            }
+                        }
+                        is StorageResult.Failure -> {
+                            // Unreadable tree: skip it rather than failing the whole selection.
+                        }
+                    }
+                    continue
                 }
+
+                addLeafFile(resolver, uri, "", newItems)
             }
 
             if (newItems.isNotEmpty()) {
@@ -103,6 +112,29 @@ class SendViewModel(
                     _selectedFiles.value = _selectedFiles.value + newItems
                 }
             }
+        }
+    }
+
+    private fun addLeafFile(
+        resolver: FileMetadataResolver,
+        uri: Uri,
+        relativePath: String,
+        newItems: MutableList<SelectedFileItem>
+    ) {
+        val metaResult = resolver.resolve(uri)
+        if (metaResult is StorageResult.Success) {
+            val file = metaResult.data
+            val size = if (file.size >= 0) file.size else 0L
+            newItems.add(
+                SelectedFileItem(
+                    uri = uri,
+                    name = file.displayName,
+                    size = size,
+                    mimeType = file.mimeType,
+                    formattedSize = SelectedFileItem.formatFileSize(size),
+                    relativePath = relativePath
+                )
+            )
         }
     }
 
@@ -124,6 +156,8 @@ class SendViewModel(
      * Starts local NSD peer discovery.
      */
     fun startDiscovery(context: Context) {
+        if (isDiscoveryRunning) return
+
         val discovery = customDiscoveryService ?: activeDiscoveryService ?: run {
             val newService = NsdDiscoveryService.create(context.applicationContext)
             activeDiscoveryService = newService
@@ -141,6 +175,7 @@ class SendViewModel(
             }
         }
 
+        isDiscoveryRunning = true
         discovery.startDiscovery()
     }
 
@@ -150,6 +185,7 @@ class SendViewModel(
     fun stopDiscovery() {
         activeDiscoveryService?.stopDiscovery()
         customDiscoveryService?.stopDiscovery()
+        isDiscoveryRunning = false
     }
 
     /**
@@ -172,7 +208,8 @@ class SendViewModel(
             transferId = transferId,
             targetHost = device.host,
             targetPort = device.port,
-            uris = uris
+            uris = uris,
+            relativePaths = files.map { it.relativePath }
         )
 
         return transferId
