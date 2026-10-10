@@ -20,6 +20,12 @@ sealed class NetworkError(
         override val cause: Throwable? = null
     ) : NetworkError(message, cause)
 
+    data class PeerFingerprintMismatch(
+        val expectedFingerprint: String,
+        override val message: String = "Peer identity fingerprint does not match expected pin",
+        override val cause: Throwable? = null
+    ) : NetworkError(message, cause)
+
     data class ProtocolVersionMismatch(
         val expected: Int,
         val actual: Int,

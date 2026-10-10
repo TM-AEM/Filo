@@ -38,8 +38,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class TransferSender(
     val deviceName: String = "FiloSender",
-    val signingIdentity: SigningIdentity = KeystoreSigningIdentity()
+    val signingIdentity: SigningIdentity = KeystoreSigningIdentity(),
+    val expectedPeerFingerprint: String? = null
 ) {
+    companion object {
+        private val FINGERPRINT_PATTERN = Regex("^[0-9a-f]{64}$")
+    }
     private val _state = MutableStateFlow<TransferState>(TransferState.Idle)
     val state: StateFlow<TransferState> = _state.asStateFlow()
 
@@ -177,6 +181,12 @@ class TransferSender(
         } catch (e: NetworkError.TransferCancelled) {
             cancel()
             Result.failure(e)
+        } catch (e: NetworkError.PeerFingerprintMismatch) {
+            transitionTo(TransferState.Failed(e))
+            try {
+                connection.close()
+            } catch (_: Throwable) {}
+            Result.failure(e)
         } catch (e: Throwable) {
             val netError = if (e is NetworkError) e else NetworkError.IoError(e.message ?: "Transfer error", e)
             transitionTo(TransferState.Failed(netError))
@@ -198,7 +208,22 @@ class TransferSender(
         }
     }
 
+    private fun verifyPeerFingerprintPin(actualFingerprint: String) {
+        val expected = expectedPeerFingerprint ?: return
+        if (expected != actualFingerprint) {
+            throw NetworkError.PeerFingerprintMismatch(expected)
+        }
+    }
+
     private fun performHandshake(connection: SocketConnection) {
+        val expected = expectedPeerFingerprint
+        if (expected != null && !FINGERPRINT_PATTERN.matches(expected)) {
+            try {
+                connection.close()
+            } catch (_: Throwable) {}
+            throw NetworkError.PeerFingerprintMismatch(expected)
+        }
+
         try {
             val initiatorState = SecureHandshake.initiate(signingIdentity)
 
@@ -219,9 +244,16 @@ class TransferSender(
                 peerSig = split.signature
             )
 
+            verifyPeerFingerprintPin(completion.session.peerFingerprint)
+
             connection.sendHandshakeFrame(FrameType.HANDSHAKE_FINISH, completion.signatureToSend)
 
             connection.enterSecure(SecureTransportState.forInitiator(completion.session))
+        } catch (e: NetworkError.PeerFingerprintMismatch) {
+            try {
+                connection.close()
+            } catch (_: Throwable) {}
+            throw e
         } catch (e: HandshakeError) {
             throw NetworkError.HandshakeFailed("Initiator handshake failed: ${e.category}", e)
         } catch (e: GeneralSecurityException) {

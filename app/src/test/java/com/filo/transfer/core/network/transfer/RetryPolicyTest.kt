@@ -34,7 +34,13 @@ class RetryPolicyTest {
         assertFalse(policy.isRetryable(NetworkError.InvalidFrame("bad frame")))
         assertFalse(policy.isRetryable(NetworkError.OversizedPayload(300, 200)))
         assertFalse(policy.isRetryable(NetworkError.UnsafeFilename("..")))
+        assertFalse(policy.isRetryable(NetworkError.UnsafeRelativePath("a/../b")))
         assertFalse(policy.isRetryable(NetworkError.InvalidOffset(10, 5)))
+        assertFalse(
+            policy.isRetryable(
+                NetworkError.PeerFingerprintMismatch("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+            )
+        )
     }
 
     @Test

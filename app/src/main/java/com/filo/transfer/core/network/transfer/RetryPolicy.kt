@@ -31,6 +31,7 @@ class RetryPolicy(
         if (throwable is NetworkError.UnsafeFilename) return false
         if (throwable is NetworkError.UnsafeRelativePath) return false
         if (throwable is NetworkError.InvalidOffset) return false
+        if (throwable is NetworkError.PeerFingerprintMismatch) return false
 
         // Transient exceptions eligible for retry
         if (throwable is NetworkError.Timeout) return true
